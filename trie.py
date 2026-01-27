@@ -155,7 +155,15 @@ class CompressedTrie:
         node = self.nodes[node_id]
         return sorted(
             node.child_ids,
-            key=lambda child_id: (self.nodes[child_id].main_Ld, self.nodes[child_id].depth)
+            key=lambda child_id: self.nodes[child_id].main_Ld
+        )
+    
+    def _get_children_by_main_Ld_2(self, node_id: int) -> List[int]:
+        """按main_Ld值排序子节点"""
+        node = self.nodes[node_id]
+        return sorted(
+            node.child_ids,
+            key=lambda child_id: (0 if self.nodes[child_id].child_ids else 1, -self.nodes[child_id].main_Ld)
         )
     
     def _get_children_random(self, node_id: int, seed: Optional[int] = None) -> List[int]:
@@ -175,6 +183,12 @@ class CompressedTrie:
         """获取按main_Ld优先DFS遍历得到的字符串顺序"""
         result = []
         self._dfs_with_children_order(0, self._get_children_by_main_Ld, result)
+        return result
+    
+    def get_str_order_by_main_Ld_2(self) -> List[int]:
+        """获取按main_Ld优先DFS遍历得到的字符串顺序"""
+        result = []
+        self._dfs_with_children_order(0, self._get_children_by_main_Ld_2, result)
         return result
     
     def get_str_order_random(self, seed: Optional[int] = None) -> List[int]:

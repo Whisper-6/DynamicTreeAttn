@@ -67,10 +67,10 @@ def run_dense_forward(model, datas):
     print(f"[Dense Inference] Throughput : {throughput:.2f} tokens/s")
     print(f"[Dense Inference] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
 
-def run_tree_forward(model, dtype, datas, max_seq_len=16384):
+def run_tree_forward(model, dtype, datas, permute):
     
     model.eval()
-    engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=dtype, max_seq_len=max_seq_len, forward_only=True)
+    engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=dtype, max_seq_len=16384, forward_only=True)
 
     results = []
 
@@ -86,8 +86,16 @@ def run_tree_forward(model, dtype, datas, max_seq_len=16384):
     for input_ids in tqdm.tqdm(datas):
         torch.cuda.synchronize()
         forward_time = time.time()
-        trie = TokenTrie(input_ids, attachs=None)
-        engine.forward(model=model, token_trie=trie)
+        token_trie = TokenTrie(input_ids, attachs=None)
+        if permute == "random":
+            token_trie.random_permute()
+        elif permute == "idx":
+            pass  # 保持原始顺序
+        elif permute == "ours":
+            token_trie.forward_permute()
+        else:
+            raise ValueError(f"Unsupported permute method: {permute}")
+        engine.forward(model=model, token_trie=token_trie)
         torch.cuda.synchronize()
         forward_time = time.time() - forward_time
 
@@ -136,7 +144,7 @@ def run_dense_backward(model, datas, loss_fn, gradient_checkpointing_enabled: bo
     print(f"[Dense Training] Throughput : {throughput:.2f} tokens/s")
     print(f"[Dense Training] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
 
-def run_tree_backward(model, dtype, datas, loss_fn, block_size):
+def run_tree_backward(model, dtype, datas, loss_fn, block_size, permute):
     
     model.train()
 
@@ -160,6 +168,14 @@ def run_tree_backward(model, dtype, datas, loss_fn, block_size):
         backward_time = time.time()
         attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(input_ids)
         token_trie = TokenTrie(input_ids, attachs=attachs)
+        if permute == "random":
+            token_trie.random_permute()
+        elif permute == "idx":
+            pass  # 保持原始顺序
+        elif permute == "ours":
+            token_trie.backward_permute()
+        else:
+            raise ValueError(f"Unsupported permute method: {permute}")
         engine.backward(model=model, token_trie=token_trie, block_size=block_size, loss_fn=loss_fn)
         torch.cuda.synchronize()
         backward_time = time.time() - backward_time
@@ -187,6 +203,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--act-ckpt", action="store_true", help="enable activation checkpointing")
+    parser.add_argument("--permute", type=str, default=None, choices=["random", "idx", "ours"])
 
     args = parser.parse_args()
     dtype = torch.bfloat16
@@ -210,7 +227,7 @@ if __name__ == "__main__":
         run_dense_backward(model, datas, loss_fn, gradient_checkpointing_enabled=args.act_ckpt)
 
     elif args.run == "tree_forward":
-        run_tree_forward(model, dtype, datas)
+        run_tree_forward(model, dtype, datas, args.permute)
 
     elif args.run == "tree_backward":
-        run_tree_backward(model, dtype, datas, loss_fn, block_size=args.block_size)
+        run_tree_backward(model, dtype, datas, loss_fn, args.block_size, args.permute)

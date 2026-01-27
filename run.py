@@ -84,7 +84,7 @@ def run_dense_forward(model, input_ids):
     print(f"Time (s)      : {forward_time:.3f}")
     print(f"Throughput    : {throughput:.2f} tokens/s")
 
-def run_tree_forward(model, dtype, input_ids):
+def run_tree_forward(model, dtype, input_ids, permute):
     
     model.eval()
     
@@ -99,6 +99,17 @@ def run_tree_forward(model, dtype, input_ids):
         forward_only=True
     )
     trie = TokenTrie(input_ids, attachs=None, dtype=dtype)
+
+    if permute == "random":
+        trie.random_permute()
+    elif permute == "idx":
+        pass  # 保持原始顺序
+    elif permute == "ours":
+        trie.forward_permute()
+    else:
+        raise ValueError(f"Unsupported permute method: {permute}")
+
+
     logprobs_list = engine.forward(model=model, token_trie=trie)
     
     torch.cuda.synchronize()
@@ -138,13 +149,23 @@ def run_dense_backward(model, input_ids, attachs, loss_fn, gradient_checkpointin
 
     return loss
 
-def run_tree_backward(model, input_ids, attachs, loss_fn):
+def run_tree_backward(model, input_ids, attachs, loss_fn, permute):
     
     backward_time = time.time()
 
     max_seq_len = max(len(ids) for ids in input_ids)
-    trie = TokenTrie(input_ids, attachs, dtype=dtype)
     engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=dtype, max_seq_len=max_seq_len)
+
+    trie = TokenTrie(input_ids, attachs, dtype=dtype)
+    if permute == "random":
+        trie.random_permute()
+    elif permute == "idx":
+        pass  # 保持原始顺序
+    elif permute == "ours":
+        trie.backward_permute()
+    else:
+        raise ValueError(f"Unsupported permute method: {permute}")
+
     loss = engine.backward(model=model, token_trie=trie, block_size=args.block_size, loss_fn=loss_fn)
 
     torch.cuda.synchronize()
@@ -182,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--throw-prefix", type=int, default=None)
     parser.add_argument("--max-seq-len", type=int, default=None)
     parser.add_argument("--grad-out", type=str, default=None)
+    parser.add_argument("--permute", type=str, default=None, choices=["random", "idx", "ours"])
 
     args = parser.parse_args()
     dtype = parse_dtype(args.dtype)
@@ -193,13 +215,6 @@ if __name__ == "__main__":
         input_ids = [ids[args.throw_prefix:] for ids in input_ids if ids.numel() > args.throw_prefix]
     if args.max_seq_len is not None:
         input_ids = [ids[: args.max_seq_len] for ids in input_ids]
-
-    # input_ids = input_ids[:1]
-
-    # token_trie = TokenTrie(input_ids, sorted=False, dtype=dtype)
-    # parts = token_trie.divide(n_parts=2)
-    # print(parts)
-    # input_ids = [input_ids[i] for i in parts[0]]  # 只用第一部分测试
 
     # -------- load model --------
     model = AutoModelForCausalLM.from_pretrained(
@@ -222,11 +237,11 @@ if __name__ == "__main__":
         run_dense_backward(model, input_ids, attachs, loss_fn, gradient_checkpointing_enabled=args.act_ckpt)
 
     elif args.run == "tree_forward":
-        run_tree_forward(model, dtype, input_ids)
+        run_tree_forward(model, dtype, input_ids, args.permute)
 
     elif args.run == "tree_backward":
-        run_tree_backward(model, input_ids, attachs, loss_fn)
-        run_tree_backward(model, input_ids, attachs, loss_fn)
+        run_tree_backward(model, input_ids, attachs, loss_fn, args.permute)
+        run_tree_backward(model, input_ids, attachs, loss_fn, args.permute)
 
     print(f"[Tree Inference] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
 
