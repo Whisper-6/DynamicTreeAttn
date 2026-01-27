@@ -95,6 +95,15 @@ class TokenTrie:
         self.n_tree_tokens = self.n_leafed_tokens - sum(self.lcp_lens)
 
 
+    def count_task(self):
+        if not self.lcp_lens:
+            return 1
+        min_lcp = min(self.lcp_lens)
+        return self.lens.count(min_lcp) + 1
+    
+    def max_len(self):
+        return max(self.lens)
+
     def get_forward_permute(self):
         trie = CompressedTrie(self.lens, self.lcp_lens)
         permutation = trie.get_str_order_by_main_Ld()
