@@ -49,7 +49,8 @@ def run_dense_forward(model, datas):
     print(f"total files:{len(datas)}, total tokens:{n_tokens}")
 
     # warmup
-    forward(model, datas[0])
+    token_trie = TokenTrie(datas[0])
+    forward(model, token_trie.inputs)
 
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
@@ -121,8 +122,10 @@ def run_dense_backward(model, datas, loss_fn, gradient_checkpointing_enabled: bo
     n_tokens = sum(len(ids) for input_ids in datas for ids in input_ids)
 
     # warmup
-    attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(datas[0])
-    backward(model, datas[0], attachs, loss_fn, gradient_checkpointing_enabled)
+    token_trie = TokenTrie(datas[0])
+    inputs = token_trie.inputs
+    attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(inputs)
+    backward(model, inputs, attachs, loss_fn, gradient_checkpointing_enabled)
 
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
@@ -144,7 +147,7 @@ def run_dense_backward(model, datas, loss_fn, gradient_checkpointing_enabled: bo
     print(f"[Dense Training] Throughput : {throughput:.2f} tokens/s")
     print(f"[Dense Training] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
 
-def run_tree_backward(model, dtype, datas, loss_fn, block_size, permute):
+def run_tree_backward(model, dtype, datas, loss_fn, block_size, permute, cut_f1_tail):
     
     model.train()
 
@@ -155,7 +158,7 @@ def run_tree_backward(model, dtype, datas, loss_fn, block_size, permute):
     # warmup
     attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(datas[0])
     token_trie = TokenTrie(datas[0], attachs=attachs)
-    engine.backward(model=model, token_trie=token_trie, block_size=block_size, loss_fn=loss_fn)
+    engine.backward(model=model, token_trie=token_trie, block_size=block_size, loss_fn=loss_fn, cut_f1_tail=cut_f1_tail)
 
     results = []
 
@@ -176,7 +179,7 @@ def run_tree_backward(model, dtype, datas, loss_fn, block_size, permute):
             token_trie.backward_permute()
         else:
             raise ValueError(f"Unsupported permute method: {permute}")
-        engine.backward(model=model, token_trie=token_trie, block_size=block_size, loss_fn=loss_fn)
+        engine.backward(model=model, token_trie=token_trie, block_size=block_size, loss_fn=loss_fn, cut_f1_tail=cut_f1_tail)
         torch.cuda.synchronize()
         backward_time = time.time() - backward_time
 
@@ -204,6 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--act-ckpt", action="store_true", help="enable activation checkpointing")
     parser.add_argument("--permute", type=str, default=None, choices=["random", "idx", "ours"])
+    parser.add_argument("--cut-f1-tail", action="store_true", help="enable cutting f1 tail")
 
     args = parser.parse_args()
     dtype = torch.bfloat16
@@ -230,4 +234,4 @@ if __name__ == "__main__":
         run_tree_forward(model, dtype, datas, args.permute)
 
     elif args.run == "tree_backward":
-        run_tree_backward(model, dtype, datas, loss_fn, args.block_size, args.permute)
+        run_tree_backward(model, dtype, datas, loss_fn, args.block_size, args.permute, args.cut_f1_tail)

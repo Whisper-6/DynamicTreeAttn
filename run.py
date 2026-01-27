@@ -240,7 +240,7 @@ if __name__ == "__main__":
         run_tree_forward(model, dtype, input_ids, args.permute)
 
     elif args.run == "tree_backward":
-        run_tree_backward(model, input_ids, attachs, loss_fn, args.permute)
+        # run_tree_backward(model, input_ids, attachs, loss_fn, args.permute)
         run_tree_backward(model, input_ids, attachs, loss_fn, args.permute)
 
     print(f"[Tree Inference] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")

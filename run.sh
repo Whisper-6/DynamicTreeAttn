@@ -44,3 +44,10 @@ python run.py \
   --run tree_backward \
   --block-size 4096 \
   --permute ours
+
+python run_all.py \
+  --model-folder /data/tree/models \
+  --model Qwen3-1.7B \
+  --data-folder data/tau2-16k-small \
+  --run dense_backward \
+  --act-ckpt
