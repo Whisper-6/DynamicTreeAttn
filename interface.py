@@ -237,12 +237,19 @@ def worker_process(gpu_id, task_list, model_path, dtype_str, result_queue):
         device_map={"": gpu_id},
     )
     
+    # 将所有任务的 input_ids 移到对应设备并 clone
+    task_list_on_device = []
+    for task_id, mode, input_ids, kwargs in task_list:
+        input_ids_on_device = [ids.clone().to(device) for ids in input_ids]
+        task_list_on_device.append((task_id, mode, input_ids_on_device, kwargs))
+    
     # 准备 engines（按需创建）
     engines = {}  # mode -> engine
     
     # 执行任务
     results = []
-    for task_id, mode, input_ids, kwargs in task_list:
+    pbar = tqdm.tqdm(task_list_on_device, desc=f"GPU {gpu_id}", position=gpu_id, leave=True)
+    for task_id, mode, input_ids, kwargs in pbar:
         # 创建 engine（如果需要且未创建）
         if mode.startswith('tree') and mode not in engines:
             forward_only = (mode == 'tree_forward')
@@ -283,6 +290,15 @@ def worker_process(gpu_id, task_list, model_path, dtype_str, result_queue):
         result['end_time'] = end_time
         
         results.append(result)
+        
+        # 更新进度条显示
+        pbar.set_postfix({
+            'task': task_id.split('_')[-1],
+            'tokens': result['n_tokens'],
+            'throughput': f"{result['throughput']:.0f}tok/s"
+        })
+    
+    pbar.close()
     
     # 返回结果
     result_queue.put((gpu_id, results))

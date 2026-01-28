@@ -99,7 +99,7 @@ class TokenTrie:
         if not self.lcp_lens:
             return 1
         min_lcp = min(self.lcp_lens)
-        return self.lens.count(min_lcp) + 1
+        return self.lcp_lens.count(min_lcp) + 1
     
     def max_len(self):
         return max(self.lens)
