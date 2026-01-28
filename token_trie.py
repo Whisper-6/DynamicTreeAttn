@@ -128,8 +128,10 @@ class TokenTrie:
         order = self.get_forward_permute()
         self.permute(order)
 
-    def backward_permute(self):
+    def backward_permute(self, reversed:bool=False):
         order = self.get_backward_permute()
+        if reversed:
+            order = order[::-1]
         self.permute(order)
 
     def random_permute(self):

@@ -35,9 +35,16 @@ def dp(input_ids, K, pattern, mem_bound):
             total[at] += input_ids[id].shape[0]
         
         return bucket
-    else:
+    elif pattern == "trie_forward":
         # Trie-based partitioning
         trie = TokenTrie(input_ids)
+        trie.forward_permute()
+        return trie.divide(K, mem_bound)
+
+    elif pattern == "trie_backward":
+        # Trie-based partitioning
+        trie = TokenTrie(input_ids)
+        trie.backward_permute(reversed=True)
         return trie.divide(K, mem_bound)
 
 
@@ -131,15 +138,16 @@ def main():
         p.start()
         processes.append(p)
     
+    # 收集结果 (必须在 join 之前，防止死锁)
+    all_results = []
+    # 每个启动的 process 都会返回一次结果
+    for _ in range(len(processes)):
+        gpu_id, results = result_queue.get()
+        all_results.extend(results)
+
     # 等待所有进程完成
     for p in processes:
         p.join()
-    
-    # 收集结果
-    all_results = []
-    while not result_queue.empty():
-        gpu_id, results = result_queue.get()
-        all_results.extend(results)
     
     # 按 task_id 建立索引
     task_time_map = {}
@@ -160,17 +168,20 @@ def main():
         # 找出这个文件的 K 个子任务的最大时间
         times = [task_time_map[tid] for tid in task_ids]
         max_time = max(times)
+        avg_time = sum(times) / len(times)
         throughput = tokens / max_time
         
         file_results[f"file{file_idx}"] = {
             "tokens": tokens,
             "max_time": max_time,
+            "avg_time": avg_time,
             "throughput": throughput
         }
         
         print(f"File {file_idx}:")
         print(f"  Tokens: {tokens}")
         print(f"  Max time: {max_time:.4f}s")
+        print(f"  Avg time: {avg_time:.4f}s")
         print(f"  Throughput: {throughput:.2f} tokens/s")
     
     # 总结
@@ -194,10 +205,10 @@ if __name__ == "__main__":
 python simulate_dp.py \
     --data_path /data/tree/DynamicTreeAttn/data \
     --world_size 2 \
-    --mode tree_backward \
-    --K 2 \
-    --pattern trie \
-    --mem_bound 0 \
-    --model_path /data/tree/models/Qwen3-0.6B 
+    --mode tree_forward \
+    --K 8 \
+    --pattern trie_forward \
+    --mem_bound 1024 \
+    --model_path /data/tree/models/Qwen3-4B 
 
 """

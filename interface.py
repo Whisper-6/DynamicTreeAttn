@@ -7,6 +7,8 @@ from tree_training_engine import TreeTrainingEngine
 import os
 import tqdm
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 def parse_dtype(dtype_str: str) -> torch.dtype:
     if dtype_str == "bf16":
@@ -47,8 +49,7 @@ def run_dense_forward_single_rank(model, input_ids):
     torch.cuda.synchronize()
     forward_time = time.time()
     
-    token_trie = TokenTrie(input_ids)
-    forward(model, token_trie.inputs)
+    forward(model, input_ids)
     
     torch.cuda.synchronize()
     forward_time = time.time() - forward_time
@@ -104,10 +105,8 @@ def run_dense_backward_single_rank(model, input_ids, loss_fn, gradient_checkpoin
     torch.cuda.synchronize()
     backward_time = time.time()
     
-    token_trie = TokenTrie(input_ids)
-    inputs = token_trie.inputs
-    attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(inputs)
-    backward(model, inputs, attachs, loss_fn, gradient_checkpointing_enabled)
+    attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1}] * len(input_ids)
+    backward(model, input_ids, attachs, loss_fn, gradient_checkpointing_enabled)
     
     torch.cuda.synchronize()
     backward_time = time.time() - backward_time
@@ -239,10 +238,13 @@ def worker_process(gpu_id, task_list, model_path, dtype_str, result_queue):
     
     # 将所有任务的 input_ids 移到对应设备并 clone
     task_list_on_device = []
+    cnt = 0
     for task_id, mode, input_ids, kwargs in task_list:
-        input_ids_on_device = [ids.clone().to(device) for ids in input_ids]
-        task_list_on_device.append((task_id, mode, input_ids_on_device, kwargs))
-    
+        if cnt == 0:
+            task_list_on_device.append((task_id+"_warmup", mode, input_ids[:16], kwargs))
+        task_list_on_device.append((task_id, mode, input_ids, kwargs))
+        cnt += 1
+
     # 准备 engines（按需创建）
     engines = {}  # mode -> engine
     
@@ -260,7 +262,8 @@ def worker_process(gpu_id, task_list, model_path, dtype_str, result_queue):
                 max_seq_len=16384,
                 forward_only=forward_only
             )
-        
+
+        input_ids = [ids.clone().to(device) for ids in input_ids]
         # 执行任务
         torch.cuda.synchronize(device=gpu_id)
         start_time = time.time()
@@ -293,12 +296,14 @@ def worker_process(gpu_id, task_list, model_path, dtype_str, result_queue):
         
         # 更新进度条显示
         pbar.set_postfix({
-            'task': task_id.split('_')[-1],
+            'task': task_id,
             'tokens': result['n_tokens'],
             'throughput': f"{result['throughput']:.0f}tok/s"
         })
     
     pbar.close()
+
+    results = results[1:]
     
     # 返回结果
     result_queue.put((gpu_id, results))
