@@ -7,8 +7,6 @@ import torch.nn.functional as F
 from math import ceil
 from bisect import bisect_left, bisect_right
 
-# import time
-
 from vocab_parallel import gather_logprobs, gather_logprobs_entropy
 
 def _get_forkpos(lens, lcp_lens, block_size: int) -> list:
@@ -133,9 +131,6 @@ class TreeTrainingEngine:
             )
 
         self.ret_logprobs = []
-
-        # self.f1_time = 0.0
-        # self.f2_time = 0.0
     
     def get_forkpos(self, start: int, end: int) -> List[int]:
         """
@@ -250,15 +245,11 @@ class TreeTrainingEngine:
             )
 
         # Forward pass to compute new KV
-        # torch.cuda.synchronize()
-        # self.f1_time -= time.time()
         out = self.model(
             self.tokens[start:end].unsqueeze(0),
             past_key_values=prefix_cache,
             use_cache=True,
         )
-        # torch.cuda.synchronize()
-        # self.f1_time += time.time()
         
         # Compute logprobs & entropy for new tokens
         logits = out.logits  # [1, B, vocab]
@@ -357,13 +348,9 @@ class TreeTrainingEngine:
         # ---------------------------------------------------------------------------------
         # 2. Forward pass on tokens_to_pop (builds computation graph)
         # ---------------------------------------------------------------------------------
-        # torch.cuda.synchronize()
-        # self.f2_time -= time.time()
         out = self.model(
             tokens_to_pop.unsqueeze(0), past_key_values=prefix_cache, use_cache=True
         )
-        # torch.cuda.synchronize()
-        # self.f2_time += time.time()
         
         logits = out.logits
         block_cache = out.past_key_values
@@ -450,11 +437,7 @@ class TreeTrainingEngine:
                 grads.append(self.grad_forkpos_logits[i])
 
         # roots: loss, (KV, logprobs, entropy, forkpos logits) in tokens_to_pop
-        # torch.cuda.synchronize()
-        # self.f2_time -= time.time()
         torch.autograd.backward(roots, grads)
-        # torch.cuda.synchronize()
-        # self.f2_time += time.time()
         
         # ---------------------------------------------------------------------------------
         # 6. Accumulate gradients to prefix cache (KV, logprobs, entropy, forkpos-logits)
@@ -570,7 +553,7 @@ class TreeTrainingEngine:
 
         return self.returns
 
-    def backward(self, model, token_trie, block_size: int, loss_fn, cut_f1_tail: bool) -> float:
+    def backward(self, model, token_trie, loss_fn, block_size: int, cut_f1_tail: bool=True) -> float:
         """
         Perform backward pass over all sequences in a TokenTrie.
 
@@ -581,7 +564,7 @@ class TreeTrainingEngine:
             token_trie: TokenTrie containing input sequences and attachs.
             block_size: Maximum block size for popping to control GPU memory.
             loss_fn: Callable to compute per-sequence loss.
-
+            cut_f1_tail: Whether to cut the tail of the first forward.
         Returns:
             Total loss accumulated over all sequences.
         """
@@ -631,7 +614,5 @@ class TreeTrainingEngine:
         # Final pop for remaining tokens
         if self.cur_len > 0:
             total_loss += self.pop_byblock(0, block_size, loss_fn)
-
-        # print(f"Total forward time: {self.f1_time:.3f} s, backward time: {self.f2_time:.3f} s")
 
         return total_loss

@@ -62,8 +62,7 @@ class TokenTrie:
         self,
         inputs: List[torch.LongTensor],
         attachs: List[dict] | None = None,
-        sorted: bool = False,
-        dtype: torch.dtype = None,
+        sorted: bool = False
     ):
         if attachs is not None:
             assert len(inputs) == len(attachs), "Length of inputs and attachs must match."
@@ -93,7 +92,39 @@ class TokenTrie:
         self.n_tokens = sum(len(ids) for ids in inputs)
         self.n_leafed_tokens = sum(len(ids) for ids in self.inputs)
         self.n_tree_tokens = self.n_leafed_tokens - sum(self.lcp_lens)
+        self.sum_prefix_len = sum(self.lcp_lens)
+        self.sum_depth = 0
+        for i in range(len(self.inputs)):
+            start = self.lcp_lens[i-1] if i > 0 else 0
+            end = self.lens[i]
+            self.sum_depth += (start + end - 1) * (end - start) // 2
 
+    def get_forward_lens(self):
+        forward_lens = []
+        for i in range(len(self.inputs)):
+            start = self.lcp_lens[i-1] if i > 0 else 0
+            end = self.lens[i]
+            forward_lens.append(end - start)
+        return forward_lens
+    
+    def get_backward_lens(self):
+        backward_lens = []
+        for i in range(len(self.inputs)):
+            start = self.lcp_lens[i] if i < len(self.lcp_lens) else 0
+            end = self.lens[i]
+            backward_lens.append(end - start)
+        return backward_lens
+    
+    def get_stats(self):
+        return {
+            "n_sequences": self.n_sequences,
+            "n_tokens": self.n_tokens,
+            "n_tree_tokens": self.n_tree_tokens,
+            "sum_prefix_len": self.sum_prefix_len,
+            "sum_depth": self.sum_depth,
+            "forward_lens": self.get_forward_lens(),
+            "backward_lens": self.get_backward_lens()
+        }
 
     def get_forward_permute(self):
         trie = CompressedTrie(self.lens, self.lcp_lens)
@@ -113,6 +144,7 @@ class TokenTrie:
     def permute(self, order):
         self.inputs = [self.inputs[i] for i in order]
         self.attach_lists = [self.attach_lists[i] for i in order]
+        self.lens = [self.lens[i] for i in order]
         self.lcp_lens = [_lcp_torch(self.inputs[i], self.inputs[i+1]) for i in range(len(self.inputs)-1)]
 
     def forward_permute(self):
