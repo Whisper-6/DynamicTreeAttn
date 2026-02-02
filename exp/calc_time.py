@@ -19,7 +19,10 @@ if __name__ == "__main__":
 
     # name 的格式形如 xxx_binx
     for name, time in datas:
-        prefix, binx = name.rsplit("_bin", 1)
+        if "_bin" in name:
+            prefix = name.rsplit("_bin", 1)[0]
+        else:
+            prefix = name
         if prefix not in time_set:
             time_set[prefix] = 0.0
         total_bin_time += time
@@ -34,5 +37,6 @@ if __name__ == "__main__":
 
 
 """
-python calc_time.py --stats-file stats/Qwen3-1.7B-K8-DFS-TM-backward.jsonl
+python calc_time.py --stats-file stats/Qwen3-8B-K8-DFS-TM-backward.jsonl
+python calc_time.py --stats-file stats/Qwen3-1.7B-backward.jsonl
 """

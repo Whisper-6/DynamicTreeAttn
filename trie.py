@@ -20,6 +20,7 @@ def _get_stats(lens: List[int], lcp_lens: List[int]):
         chain_lens.append(end - start)
 
     return {
+        "n_leaf_sequences": len(lens),
         "n_tree_tokens": n_tree_tokens,
         "sum_prefix_len": sum_prefix_len,
         "sum_depth": sum_depth,

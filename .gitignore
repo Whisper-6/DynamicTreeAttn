@@ -209,4 +209,6 @@ __marimo__/
 data/*
 !data/*.zip
 stats/*
+stats_old/*
 *.sh
+grad/*.pt

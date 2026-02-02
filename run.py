@@ -167,17 +167,17 @@ if __name__ == "__main__":
 
     parser.add_argument("--dtype", type=str, default="bf16",
                         choices=["bf16", "fp16", "fp32"])
-    parser.add_argument("--attn-imp", type=str, default=None,
+    parser.add_argument("--attn-imp", type=str, default="flash_attention_3",
                         choices=["flash_attention_3", "flash_attention_2", "sdpa", "eager"])
     parser.add_argument("--run", type=str, required=True,
                         choices=["dense_forward", "tree_forward", "dense_backward", "tree_backward"])
+    parser.add_argument("--grad-out", type=str, default=None)
 
     parser.add_argument("--block-size", type=int, default=2048)
-    parser.add_argument("--act-ckpt", default=True, help="enable activation checkpointing")
-    parser.add_argument("--grad-out", type=str, default=None)
+    parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
-    parser.add_argument("--cut-f1-tail", default=True, help="enable cutting f1 tail")
-    parser.add_argument("--leafization", default=True, help="enable tqdm progress bar")
+    parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
+    parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
 
     args = parser.parse_args()
     if args.attn_imp is None:
@@ -241,3 +241,22 @@ if __name__ == "__main__":
                     break
         else:
             save_gradients(model, args.grad_out)
+
+"""
+python run.py \
+  --model /data/tree/models/Qwen3-0.6B \
+  --data data/tau2-16k-merged/call1.pt \
+  --run tree_backward \
+  --grad-out grad/Qwen3-0.6B-TB-bf16.pt
+
+python run.py \
+  --model /data/tree/models/Qwen3-0.6B \
+  --data data/tau2-16k-merged/call1.pt \
+  --run dense_backward \
+  --grad-out grad/Qwen3-0.6B-DB-bf16.pt
+
+python compare_grads.py \
+    --baseline-grad grad/Qwen3-0.6B-DB-bf16.pt \
+    --exp-grad grad/Qwen3-0.6B-TB-bf16.pt \
+    --out grad/Qwen3-0.6B-TB-vs-DB-bf16.txt
+"""

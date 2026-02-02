@@ -110,14 +110,18 @@ if __name__ == "__main__":
     parser.add_argument("--stats-out", type=str, default=None)
 
     parser.add_argument("--block-size", type=int, default=2048)
-    parser.add_argument("--act-ckpt", action="store_true", help="enable activation checkpointing")
+    parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
-    parser.add_argument("--cut-f1-tail", action="store_true", help="enable cutting f1 tail")
-    parser.add_argument("--leafization", action="store_true", help="enable leafization")
+    parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
+    parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
     
     args = parser.parse_args()
     args.dtype = torch.bfloat16
     run_name = args.run.replace('_', ' ').title()
+
+    if os.path.exists(args.stats_out):
+        print(f"Stats file {args.stats_out} already exists. Skipping...")
+        exit(0)
 
     # -------- load data --------
     datas = load_data(args.data)
