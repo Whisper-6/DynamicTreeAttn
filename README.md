@@ -70,13 +70,13 @@ python run.py \
 python run.py \
   --model /data/tree/models/Qwen3-0.6B \
   --data data/tau2-16k-merged/call1.pt \
-  --run dense_backward
+  --run tree_backward
 
 python run_all.py \
-  --model /data/tree/models/Qwen3-1.7B \
+  --model /data/tree/models/Qwen3-0.6B \
   --data data/tau2-16k-merged \
-  --run dense_forward \
-  --stats-out stats/Qwen3-1.7B-forward.jsonl
+  --run tree_forward \
+  --stats-out stats/Qwen3-0.6B-tree-forward.jsonl
 
 python run.py \
   --model-folder /data/tree/models \
@@ -86,9 +86,24 @@ python run.py \
   --permute ours \
   --stats-out Qwen3-0.6B-forward.jsonl
 
+python run_all.py \
+  --model /data/tree/models/Qwen3-0.6B \
+  --data data/tau2-16k-K8-DFS \
+  --run tree_forward \
+  --stats-out stats/Qwen3-0.6B-K8-DFS-forward.jsonl
+
+python run_all.py \
+  --model /data/tree/models/Qwen3-1.7B \
+  --data data/tau2-16k-K8-DFS-TM-forward \
+  --run tree_forward \
+  --stats-out stats/Qwen3-1.7B-K8-DFS-TM-forward.jsonl
 
 
-python data_stats.py --data-folder data/tau2-16k-merged
+python run_all.py   --model /data/tree/models/Qwen3-4B   --data data/tau2-16k-merged   --run tree_backward   --stats-out stats/Qwen3-4B-tree-backward.jsonl
+
+python tree_time_model.py --stats-file stats/Qwen3-0.6B-K8-DFS-forward.jsonl
+python tree_time_model.py --stats-file stats/Qwen3-0.6B-forward.jsonl
+python tree_time_model.py --stats-file stats/Qwen3-4B-backward.jsonl
 
 docker exec -it areal bash
 cd data/tree/DynamicTreeAttn

@@ -4,16 +4,16 @@ from scipy.optimize import nnls
 
 L_SET = [256, 320, 400, 500, 625, 768, 896, 1024, 1152, 1296, 1458, 1600, 1792, 2048, 2176, 2448, 2754, 3000]
 
-MIN_N_DATA_POINTS = 10
+MIN_N_DATA_POINTS = 16
 MAX_N_DATA_POINTS = 256
 
-def _membound_sum(lens, bound):
-    return sum(max(bound-l, 0) for l in lens)
+def _membound_sum(chain_lens, bound):
+    return sum(max(bound - l, 0) for l in chain_lens)
 
 def _extract_stats(stats, L):
-    return stats["n_tree_tokens"], stats["sum_prefix_len"], stats["sum_depth"], _membound_sum(stats["lens"], L)
+    return stats["n_tree_tokens"], stats["sum_prefix_len"], stats["sum_depth"], _membound_sum(stats["chain_lens"], L)
 
-class TimeModel:
+class TreeTimeModel:
     def __init__(self):
         # T = a * n_tree_tokens + b * sum_prefix_len + c * sum_depth + d * sum_membound
         self.a = None
@@ -46,7 +46,7 @@ class TimeModel:
             mse = np.mean((T_pred - Y) ** 2)
 
             result.append((mse, coeffs, L))
-            print(f"Fit with L={L}: mse={mse:.6e}, coeffs={coeffs}")
+            # print(f"Fit with L={L}: mse={mse:.6e}, coeffs={coeffs}")
 
         result.sort(key=lambda x: x[0])
         best_mse, best_coeffs, best_L = result[0]
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     train_data = datas
     test_data = datas
 
-    time_model = TimeModel()
+    time_model = TreeTimeModel()
     time_model.add_data(train_data)
 
     print(f"Fitted time model:")
@@ -107,3 +107,7 @@ if __name__ == "__main__":
 
     avg_err /= len(test_data)
     print(f"Average relative error on test set: {avg_err:.2f}%")
+
+"""
+python tree_time_model.py --stats-file stats/Qwen3-8B-K8-DFS-backward.jsonl
+"""

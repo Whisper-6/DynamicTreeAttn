@@ -1,22 +1,13 @@
 import torch
 from typing import List, Union
 
-from trie import CompressedTrie
+from trie import CompressedTrie, _get_stats
 
 def _lcp_torch(a: torch.Tensor, b: torch.Tensor) -> int:
     """Compute the length of the longest common prefix of two 1D tensors."""
     L = min(a.numel(), b.numel())
     eq = a[:L] == b[:L]
     return L if eq.all() else int((~eq).to(torch.int32).argmax().item())
-
-def _calc_cost(lens, lcp_lens, bound) -> float:
-    cost = 0
-    for i in range(len(lens)):
-        lcp = lcp_lens[i-1] if i > 0 else 0
-        push_len = lens[i] - lcp
-        cost += max(push_len, bound)
-
-    return cost
 
 
 def _leafization(input_ids: List[torch.LongTensor], attachs: List[dict]):
@@ -63,7 +54,7 @@ class TokenTrie:
         inputs: List[torch.LongTensor],
         attachs: List[dict] | None = None,
         sorted: bool = False
-    ):
+    ):  
         if attachs is not None:
             assert len(inputs) == len(attachs), "Length of inputs and attachs must match."
         else:
@@ -84,62 +75,18 @@ class TokenTrie:
         # -------- leafization --------
         self.inputs, self.attach_lists, self.lcp_lens = \
             _leafization(inputs_sorted, attachs_sorted)
-
         self.lens = [len(ids) for ids in self.inputs]
 
-        # -------- statistics --------
+        # -------- stats --------
         self.n_sequences = len(inputs)
         self.n_tokens = sum(len(ids) for ids in inputs)
-        self.n_leafed_tokens = sum(len(ids) for ids in self.inputs)
-        self.n_tree_tokens = self.n_leafed_tokens - sum(self.lcp_lens)
-        self.sum_prefix_len = sum(self.lcp_lens)
-        self.sum_depth = 0
-        for i in range(len(self.inputs)):
-            start = self.lcp_lens[i-1] if i > 0 else 0
-            end = self.lens[i]
-            self.sum_depth += (start + end - 1) * (end - start) // 2
 
-    def get_forward_lens(self):
-        forward_lens = []
-        for i in range(len(self.inputs)):
-            start = self.lcp_lens[i-1] if i > 0 else 0
-            end = self.lens[i]
-            forward_lens.append(end - start)
-        return forward_lens
-    
-    def get_backward_lens(self):
-        backward_lens = []
-        for i in range(len(self.inputs)):
-            start = self.lcp_lens[i] if i < len(self.lcp_lens) else 0
-            end = self.lens[i]
-            backward_lens.append(end - start)
-        return backward_lens
-    
-    def get_stats(self):
-        return {
-            "n_sequences": self.n_sequences,
-            "n_tokens": self.n_tokens,
-            "n_tree_tokens": self.n_tree_tokens,
-            "sum_prefix_len": self.sum_prefix_len,
-            "sum_depth": self.sum_depth,
-            "forward_lens": self.get_forward_lens(),
-            "backward_lens": self.get_backward_lens()
-        }
-
-    def get_forward_permute(self):
-        trie = CompressedTrie(self.lens, self.lcp_lens)
-        permutation = trie.get_str_order_by_main_Ld()
-        return permutation
-
-    def get_backward_permute(self):
-        trie = CompressedTrie(self.lens, self.lcp_lens)
-        permutation = trie.get_str_order_by_main_Ld_2()
-        return permutation
-
-    def get_random_permute(self):
-        trie = CompressedTrie(self.lens, self.lcp_lens)
-        permutation = trie.get_str_order_random()
-        return permutation
+    def get_stats(self, reverse: bool=False):
+        stats = _get_stats(self.lens[::-1], self.lcp_lens[::-1]) if reverse \
+            else _get_stats(self.lens, self.lcp_lens)
+        stats['n_sequences'] = self.n_sequences
+        stats['n_tokens'] = self.n_tokens
+        return stats
     
     def permute(self, order):
         self.inputs = [self.inputs[i] for i in order]
@@ -148,62 +95,16 @@ class TokenTrie:
         self.lcp_lens = [_lcp_torch(self.inputs[i], self.inputs[i+1]) for i in range(len(self.inputs)-1)]
 
     def forward_permute(self):
-        order = self.get_forward_permute()
+        compressed_trie = CompressedTrie(self.lens, self.lcp_lens)
+        order, _, _ = compressed_trie.get_order_forward()
         self.permute(order)
 
     def backward_permute(self):
-        order = self.get_backward_permute()
+        compressed_trie = CompressedTrie(self.lens, self.lcp_lens)
+        order, _, _ = compressed_trie.get_order_backward()
         self.permute(order)
 
     def random_permute(self):
-        order = self.get_random_permute()
+        compressed_trie = CompressedTrie(self.lens, self.lcp_lens)
+        order = compressed_trie.get_order_random()
         self.permute(order)
-
-    def try_devide(self, cost_limit: int, mem_bound: int) -> List[List[int]] | None:
-        """
-        Try to divide the sequences such that the maximum cost of each 
-        part does not exceed cost_limit.
-        
-        If successful, return the division result (list of original 
-        sequence IDs for each part); otherwise return None.
-        """
-        divs = [-1]
-
-        start = 0
-        for i in range(1, len(self.lens)):
-            if _calc_cost(self.lens[start:i], self.lcp_lens[start:i], bound=mem_bound) > cost_limit:
-                divs.append(i)
-                start = i
-
-        divs.append(len(self.lens))
-        
-        parts = []
-        for i in range(len(divs)-1):
-            part = []
-            for j in range(divs[i]+1, divs[i+1]):
-                for attachment, _ in self.attach_lists[j]:
-                    part.append(attachment['_sequence_batch_id'])
-            parts.append(part)
-        
-        return parts
-                
-    def divide(self, n_parts: int, mem_bound: int):
-        """
-        Divide the sequences into n_parts such that the maximum tree tokens
-        in each part is minimized.
-        """
-        self.lens = [len(ids) for ids in self.inputs]
-
-        L = 0
-        R = _calc_cost(self.lens, self.lcp_lens, bound=mem_bound)
-
-        while L < R:
-            mid = (L + R) // 2
-            parts = self.try_devide(cost_limit=mid, mem_bound=mem_bound)
-            if parts is not None and len(parts) <= n_parts:
-                R = mid
-            else:
-                L = mid + 1
-
-        parts = self.try_devide(cost_limit=R, mem_bound=mem_bound)
-        return parts

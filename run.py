@@ -57,9 +57,6 @@ def tree_forward(model, engine, input_ids, args):
     stats = trie.get_stats()
     stats["loss"] = loss
     stats["time"] = forward_time
-    stats["lens"] = stats["forward_lens"]
-    del stats["forward_lens"]
-    del stats["backward_lens"]
 
     return stats
     
@@ -110,12 +107,9 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
     )
     backward_time = get_time() - backward_time
 
-    stats = trie.get_stats()
+    stats = trie.get_stats(reverse=True)
     stats["loss"] = loss
     stats["time"] = backward_time
-    stats["lens"] = stats["backward_lens"]
-    del stats["backward_lens"]
-    del stats["forward_lens"]
 
     return stats
 

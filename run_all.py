@@ -25,7 +25,8 @@ def load_data(data_folder: str):
     datas = []
     for file in sorted(data_files):
         data = torch.load(file, map_location="cpu")
-        datas.append(data)
+        name = os.path.basename(file)[:-3]
+        datas.append((name, data))
 
     return datas
 
@@ -33,12 +34,14 @@ def load_data(data_folder: str):
 def run_dense_forward(model, datas, warmup: bool=True):
 
     if warmup:
-        dense_forward(model, datas[0][:16], use_tqdm=False)
+        inputs = datas[0][1][:16]
+        dense_forward(model, inputs, use_tqdm=False)
 
     results = []
 
-    for input_ids in tqdm.tqdm(datas):
+    for name, input_ids in tqdm.tqdm(datas):
         stats = dense_forward(model, input_ids, use_tqdm=False)
+        stats["name"] = name
         results.append(stats)
     
     return results
@@ -48,12 +51,14 @@ def run_tree_forward(model, datas, args, warmup: bool=True):
     engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=args.dtype, max_seq_len=16384, forward_only=True)
 
     if warmup:
-        tree_forward(model, engine, datas[0], args)
+        inputs = datas[0][1]
+        tree_forward(model, engine, inputs, args)
 
     results = []
 
-    for input_ids in tqdm.tqdm(datas):
+    for name, input_ids in tqdm.tqdm(datas):
         stats = tree_forward(model, engine, input_ids, args)
+        stats["name"] = name
         results.append(stats)
 
     return results
@@ -61,16 +66,17 @@ def run_tree_forward(model, datas, args, warmup: bool=True):
 def run_dense_backward(model, datas, loss_fn, act_ckpt, warmup: bool=True):
 
     if warmup:
-        inputs = datas[0][:16]
+        inputs = datas[0][1][:16]
         attachs = [ATTACH] * len(inputs)
         dense_backward(model, inputs, attachs, loss_fn, act_ckpt, use_tqdm=False)
         model.zero_grad()
 
     results = []
 
-    for input_ids in tqdm.tqdm(datas):
+    for name, input_ids in tqdm.tqdm(datas):
         attachs = [ATTACH] * len(input_ids)
         stats = dense_backward(model, input_ids, attachs, loss_fn, act_ckpt, use_tqdm=False)
+        stats["name"] = name
         results.append(stats)
 
     return results
@@ -80,15 +86,17 @@ def run_tree_backward(model, datas, loss_fn, args, warmup: bool=True):
     engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=args.dtype, max_seq_len=16384)
 
     if warmup:
-        attachs = [ATTACH] * len(datas[0])
-        tree_backward(model, engine, datas[0], attachs, loss_fn, args)
+        inputs = datas[0][1]
+        attachs = [ATTACH] * len(inputs)
+        tree_backward(model, engine, inputs, attachs, loss_fn, args)
         model.zero_grad()
 
     results = []
 
-    for input_ids in tqdm.tqdm(datas):
+    for name, input_ids in tqdm.tqdm(datas):
         attachs = [ATTACH] * len(input_ids)
         stats = tree_backward(model, engine, input_ids, attachs, loss_fn, args)
+        stats["name"] = name
         results.append(stats)
 
     return results
@@ -115,7 +123,7 @@ if __name__ == "__main__":
     datas = load_data(args.data)
 
     if args.leafization:
-        for input_ids in datas:
+        for _, input_ids in datas:
             token_trie = TokenTrie(input_ids)
             input_ids = token_trie.inputs
 
@@ -149,6 +157,7 @@ if __name__ == "__main__":
     total_time = sum(stat["time"] for stat in results)
     throughput = total_tokens / total_time
     print(f"[{run_name}] Throughput: {throughput:.2f} tokens/s")
+    print(f"[{run_name}] Peak memory: {torch.cuda.max_memory_allocated() / (1024**3):.2f} GB")
 
     if args.stats_out is not None:
         with open(args.stats_out, "w") as f:
