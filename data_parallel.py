@@ -3,6 +3,8 @@ from typing import Set, List, Optional
 from token_trie import TokenTrie
 from trie import CompressedTrie, _get_subtrie, _get_stats
 
+from typing import Optional
+
 def LB_by_n_tokens(token_seqs, K):
     bins = [[] for _ in range(K)]
     bin_lens = [0] * K
@@ -13,18 +15,15 @@ def LB_by_n_tokens(token_seqs, K):
         bin_lens[min_bin] += len(token_seqs[i])
     return bins
 
-def pred_time(compressed_trie, time_model, permute: str):
-    if permute not in {"forward", "backward"}:
-        raise ValueError(f"Unsupported permute method: {permute}")
-    
-    if permute == "forward":
+def pred_time(compressed_trie, time_model, mode: str, block_size: Optional[int]=None) -> float:    
+    if mode == "forward":
         _, lens, lcp_lens = compressed_trie.get_order_forward()
-    elif permute == "backward":
+    elif mode == "backward":
         _, lens, lcp_lens = compressed_trie.get_order_backward()
-        lens = lens[::-1]
-        lcp_lens = lcp_lens[::-1]
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
     
-    stats = _get_stats(lens, lcp_lens)
+    stats = _get_stats(lens, lcp_lens, mode, block_size)
     return time_model.pred(stats)
 
 def get_original_bins(token_trie: TokenTrie, leaf_bins: List[List[int]]) -> List[List[int]]:
@@ -37,12 +36,13 @@ def get_original_bins(token_trie: TokenTrie, leaf_bins: List[List[int]]) -> List
                 bins[bucket_idx].append(original_seq_idx)
     return bins
 
-def LB_by_TM(token_seqs, time_model, permute: str, K):
+def LB_by_TM(token_seqs, time_model, args):
 
     token_trie = TokenTrie(token_seqs)
     n_leaf_seqs = len(token_trie.inputs)
     compressed_trie = CompressedTrie(token_trie.lens, token_trie.lcp_lens)
 
+    K = args.K
     leaf_bins = [[] for _ in range(K)]
     bin_times = [0.0] * K
 
@@ -50,13 +50,13 @@ def LB_by_TM(token_seqs, time_model, permute: str, K):
         min_bin = min(range(K), key=lambda j: bin_times[j])
         leaf_bins[min_bin].append(i)
         bin_compressed_trie = _get_subtrie(compressed_trie, leaf_bins[min_bin])
-        bin_times[min_bin] = pred_time(bin_compressed_trie, time_model, permute)
+        bin_times[min_bin] = pred_time(bin_compressed_trie, time_model, args.mode, args.block_size)
 
     bins = get_original_bins(token_trie, leaf_bins)
     return bins
 
-def try_devide(compressed_trie, n_seqs, K, divL, divR, time_model, permute: str, cost_limit: float) -> List[List[int]] | None:
-
+def try_devide(compressed_trie, n_seqs, args, divL, divR, time_model, cost_limit: float) -> List[List[int]] | None:
+    K = args.K
     divs = []
 
     start = 0
@@ -69,7 +69,7 @@ def try_devide(compressed_trie, n_seqs, K, divL, divR, time_model, permute: str,
         while L < R:
             mid = (L + R + 1) // 2
             cur_subtrie = _get_subtrie(compressed_trie, set(range(start, mid + 1)))
-            est_time = pred_time(cur_subtrie, time_model, permute)
+            est_time = pred_time(cur_subtrie, time_model, args.mode, args.block_size)
             if est_time <= cost_limit:
                 L = mid
             else:
@@ -78,13 +78,14 @@ def try_devide(compressed_trie, n_seqs, K, divL, divR, time_model, permute: str,
 
     return divs
 
-def LB_by_DFS_and_TM(token_seqs, time_model, permute: str, K):
+def LB_by_DFS_and_TM(token_seqs, time_model, args):
 
     token_trie = TokenTrie(token_seqs)
     n_leaf_seqs = len(token_trie.inputs)
     compressed_trie = CompressedTrie(token_trie.lens, token_trie.lcp_lens)
     
-    R = float(pred_time(compressed_trie, time_model, permute))
+    K = args.K
+    R = float(pred_time(compressed_trie, time_model, args.mode, args.block_size))
     L = R / K
     eps = R * 1e-4
 
@@ -93,7 +94,7 @@ def LB_by_DFS_and_TM(token_seqs, time_model, permute: str, K):
 
     while R - L > eps:
         mid = (L + R) / 2.0
-        divs = try_devide(compressed_trie, n_leaf_seqs, K, divL, divR, time_model, permute, mid)
+        divs = try_devide(compressed_trie, n_leaf_seqs, args, divL, divR, time_model, mid)
         if len(divs) <= K:
             R = mid
             divR[:len(divs)] = divs
@@ -108,13 +109,13 @@ def LB_by_DFS_and_TM(token_seqs, time_model, permute: str, K):
 
 # -------- Test --------
 
-def eval(token_seqs, bins, time_model, permute: str):
+def eval(token_seqs, bins, time_model, args):
     total_time = 0.0
     max_time = 0.0
     for bucket in bins:
         token_trie = TokenTrie([token_seqs[i] for i in bucket])
         compressed_trie = CompressedTrie(token_trie.lens, token_trie.lcp_lens)
-        bucket_pred_time = pred_time(compressed_trie, time_model, permute)
+        bucket_pred_time = pred_time(compressed_trie, time_model, args.mode, args.block_size)
         total_time += bucket_pred_time
         max_time = max(max_time, bucket_pred_time)
     return total_time, max_time
@@ -141,12 +142,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-folder", type=str, required=True)
     parser.add_argument("--method", type=str, required=True)
-    parser.add_argument("--permute", type=str, default="forward", choices=["forward", "backward"])
+    parser.add_argument("--mode", type=str, default="forward", choices=["forward", "backward"])
     parser.add_argument("--K", type=int, required=True)
+    parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--stats-file", type=str, default=None)
     parser.add_argument("--out-folder", type=str, default=None)
+    parser.add_argument("--eval", action="store_true")
     parser.add_argument("--disable-TM", action="store_true")
+    
     args = parser.parse_args()
+    if args.mode == "forward":
+        args.block_size = None
 
     if args.out_folder is not None and not os.path.exists(args.out_folder):
         os.makedirs(args.out_folder)
@@ -173,15 +179,15 @@ if __name__ == "__main__":
         if args.method == "LB_by_n_tokens":
             bins = LB_by_n_tokens(inputs, args.K)
         elif args.method == "LB_by_TM":
-            bins = LB_by_TM(inputs, time_model, args.permute, args.K)
+            bins = LB_by_TM(inputs, time_model, args)
         elif args.method == "LB_by_DFS_and_TM":
-            bins = LB_by_DFS_and_TM(inputs, time_model, args.permute, args.K)
+            bins = LB_by_DFS_and_TM(inputs, time_model, args)
         else:
             raise ValueError(f"Unsupported method: {args.method}")
         dp_time += time.time()
 
-        if args.stats_file is not None:
-            total_time, max_time = eval(inputs, bins, time_model_eval, args.permute)
+        if args.stats_file is not None and args.eval:
+            total_time, max_time = eval(inputs, bins, time_model_eval, args)
             total_time_sum += total_time
             max_time_sum += max_time
             # print(f"Dataset: {name},  Best time: {total_time/args.K:.4f} s, Max time: {max_time:.4f} s")
@@ -193,22 +199,17 @@ if __name__ == "__main__":
                 torch.save(bucket_inputs, out_path)
 
     print(f"Data parallel time: {dp_time:.4f} seconds")
-    if args.stats_file is not None:
+    if args.stats_file is not None and args.eval:
         print(f"Total best time: {total_time_sum/args.K:.4f} seconds")
         print(f"Total max time: {max_time_sum:.4f} seconds")
 
 """
 python data_parallel.py \
     --data-folder data/tau2-16k-merged \
-    --out-folder data/tau2-16k-K8-DFS-forward-TM \
-    --stats-file stats/Qwen3-1.7B-K8-DFS-forward.jsonl \
+    --stats-file stats/Qwen3-4B-K8-woTM-backward.jsonl \
     --method LB_by_DFS_and_TM \
     --K 8 \
-    --permute forward
-
-python data_parallel.py \
-    --data-folder data/tau2-16k-merged \
-    --method LB_by_DFS_and_TM \
-    --K 8 \
-    --permute backward
+    --mode backward \
+    --block-size 2048 \
+    --eval
 """

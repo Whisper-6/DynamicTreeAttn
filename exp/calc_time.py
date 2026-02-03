@@ -7,11 +7,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     datas = []
+    total_n_tokens = 0
     with open(args.stats_file, "r") as f:
         for line in f:
             stats = json.loads(line)
             name = stats["name"]
             time = stats["time"]
+            n_tokens = stats["n_tokens"]
+            total_n_tokens += n_tokens
             datas.append((name, time))
 
     time_set = {}
@@ -35,8 +38,5 @@ if __name__ == "__main__":
     print(f"Total call time: {total_call_time:.4f} s")
     print(f"Total bin time: {total_bin_time:.4f} s")
 
-
-"""
-python calc_time.py --stats-file stats/Qwen3-8B-K8-DFS-TM-backward.jsonl
-python calc_time.py --stats-file stats/Qwen3-1.7B-backward.jsonl
-"""
+    throughput = total_n_tokens / total_call_time
+    print(f"Throughput: {throughput:.2f} tokens/s")

@@ -1,5 +1,5 @@
 import torch
-from typing import List, Union
+from typing import List, Union, Optional
 
 from trie import CompressedTrie, _get_stats
 
@@ -81,9 +81,8 @@ class TokenTrie:
         self.n_sequences = len(inputs)
         self.n_tokens = sum(len(ids) for ids in inputs)
 
-    def get_stats(self, reverse: bool=False):
-        stats = _get_stats(self.lens[::-1], self.lcp_lens[::-1]) if reverse \
-            else _get_stats(self.lens, self.lcp_lens)
+    def get_stats(self, mode: str, block_size: Optional[int]=None):
+        stats = _get_stats(self.lens, self.lcp_lens, mode, block_size)
         stats['n_sequences'] = self.n_sequences
         stats['n_tokens'] = self.n_tokens
         return stats

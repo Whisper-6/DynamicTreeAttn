@@ -528,7 +528,6 @@ class TreeTrainingEngine:
 
         self.model = model
         self.returns = [None] * token_trie.n_sequences
-        self.forkpos_logits = [None] * self.max_seq_len  # Clear forkpos_logits to save memory
 
         inputs, attach_lists, lcp_lens = token_trie.inputs, token_trie.attach_lists, token_trie.lcp_lens
 

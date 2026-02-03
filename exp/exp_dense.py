@@ -15,6 +15,7 @@ models_OOM = [
 ]
 
 import os
+import time
 
 def run(cmd: str):
     os.system(cmd)

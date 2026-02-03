@@ -119,10 +119,6 @@ if __name__ == "__main__":
     args.dtype = torch.bfloat16
     run_name = args.run.replace('_', ' ').title()
 
-    if os.path.exists(args.stats_out):
-        print(f"Stats file {args.stats_out} already exists. Skipping...")
-        exit(0)
-
     # -------- load data --------
     datas = load_data(args.data)
 

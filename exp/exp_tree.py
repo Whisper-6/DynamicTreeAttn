@@ -22,39 +22,50 @@ for model in models:
     prefix = f"python run_all.py --model {model_path} --data {DATA_FOLDER}"
 
     print(f"Running experiments for model: {model}")
-
-    print("  Tree Forward (random permute)")
-    run(f"{prefix} \
-        --run tree_forward \
-        --permute random \
-        --stats-out stats/{model}/TF_ran.jsonl")
-
+    
     print("  Tree Forward")
-    run(f"{prefix} \
-        --run tree_forward \
-        --stats-out stats/{model}/TF.jsonl")
-
-
-    print("  Tree Backward (random permute, tailed)")
-    run(f"{prefix} \
-        --run tree_backward \
-        --permute random \
-        --cut-f1-tail False \
-        --stats-out stats/{model}/TB_ran_tailed.jsonl")
-
-    print("  Tree Backward (tailed)")
-    run(f"{prefix} \
-        --run tree_backward \
-        --permute random \
-        --stats-out stats/{model}/TB_ran.jsonl")
+    stats_file = f"stats/{model}/TF.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_forward \
+            --stats-out {stats_file}")
 
     print("  Tree Backward")
-    run(f"{prefix} \
-        --run tree_backward \
-        --stats-out stats/{model}/TB.jsonl")
-    
+    stats_file = f"stats/{model}/TB.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_backward \
+            --stats-out {stats_file}")
+
+    print("  Tree Forward (random permute)")
+    stats_file = f"stats/{model}/TF_ran.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_forward \
+            --permute random \
+            --stats-out {stats_file}")
+
+    print("  Tree Backward (random permute, tailed)")
+    stats_file = f"stats/{model}/TB_ran_tailed.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_backward \
+            --permute random \
+            --cut-f1-tail False \
+            --stats-out {stats_file}")
+
+    print("  Tree Backward (random permute)")
+    stats_file = f"stats/{model}/TB_ran.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_backward \
+            --permute random \
+            --stats-out {stats_file}")
+
     print("  Tree Backward (Larger Block Size)")
-    run(f"{prefix} \
-        --run tree_backward \
-        --block-size 4096 \
-        --stats-out stats/{model}/TB_LB.jsonl")
+    stats_file = f"stats/{model}/TB_LB.jsonl"
+    if not os.path.exists(stats_file):
+        run(f"{prefix} \
+            --run tree_backward \
+            --block-size 4096 \
+            --stats-out {stats_file}")

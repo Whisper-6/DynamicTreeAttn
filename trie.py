@@ -2,30 +2,58 @@ from dataclasses import dataclass, field
 from typing import List, Tuple,  Optional, Set
 import bisect
 import random
+from math import ceil
 
-def _get_stats(lens: List[int], lcp_lens: List[int]):
+def _get_stats(lens: List[int], lcp_lens: List[int], mode: str, block_size: Optional[int]=None) -> dict:
     n_tree_tokens = sum(lens) - sum(lcp_lens)
-    sum_prefix_len = sum(lcp_lens)
-     
     sum_depth = 0
     for i in range(len(lens)):
         start = lcp_lens[i-1] if i > 0 else 0
         end = lens[i]
         sum_depth += (start + end - 1) * (end - start) // 2
 
-    chain_lens = []
-    for i in range(len(lens)):
-        start = lcp_lens[i-1] if i > 0 else 0
-        end = lens[i]
-        chain_lens.append(end - start)
+    if mode == "forward":
+        sum_prefix_len = sum(lcp_lens)
+    
+        return {
+            "n_leaf_sequences": len(lens),
+            "n_tree_tokens": n_tree_tokens,
+            "sum_prefix_len": sum_prefix_len,
+            "sum_depth": sum_depth
+        }
+    
+    elif mode == "backward":
+        sum_prefix_len = 0
+        n_f1_tokens = 0
+        for i in range(len(lens)):
+            start = lcp_lens[i] if i < len(lcp_lens) else 0
+            end = lens[i]
+            pop_len = end - start
+            f1_start = lcp_lens[i-1] if i > 0 else 0
 
-    return {
-        "n_leaf_sequences": len(lens),
-        "n_tree_tokens": n_tree_tokens,
-        "sum_prefix_len": sum_prefix_len,
-        "sum_depth": sum_depth,
-        "chain_lens": chain_lens
-    }
+            if block_size is None or pop_len <= block_size:
+                f1_end = lcp_lens[i]
+                sum_prefix_len += start
+            else:
+                n_blocks = ceil(pop_len / block_size)
+                block_size_actual = ceil(pop_len / n_blocks)
+                f1_end = end - block_size_actual
+                for b in range(n_blocks):
+                    pop_start = max(end - (b + 1) * block_size_actual, start)
+                    sum_prefix_len += pop_start
+
+            n_f1_tokens += max(f1_end - f1_start, 0)
+
+        return {
+            "n_leaf_sequences": len(lens),
+            "n_tree_tokens": n_tree_tokens,
+            "sum_prefix_len": sum_prefix_len,
+            "sum_depth": sum_depth,
+            "n_f1_tokens": n_f1_tokens
+        }
+
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
 @dataclass(slots=True)
 class CTNode:
@@ -212,6 +240,8 @@ class CompressedTrie:
 def _get_subtrie(trie, seq_set: Set[int]) -> CompressedTrie:
     lens, lcp_lens = trie.get_lens(seq_set)
     return CompressedTrie(lens, lcp_lens)
+
+# -------- Test --------
 
 def test_compressed_trie():
     lens1 = [5, 4, 3, 2]

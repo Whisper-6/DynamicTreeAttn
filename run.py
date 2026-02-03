@@ -54,7 +54,7 @@ def tree_forward(model, engine, input_ids, args):
     loss = sum(-lp.mean().item() for lp in logprobs_list)
     forward_time = get_time() - forward_time
 
-    stats = trie.get_stats()
+    stats = trie.get_stats(mode="forward")
     stats["loss"] = loss
     stats["time"] = forward_time
 
@@ -107,7 +107,7 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
     )
     backward_time = get_time() - backward_time
 
-    stats = trie.get_stats(reverse=True)
+    stats = trie.get_stats(mode="backward", block_size=args.block_size)
     stats["loss"] = loss
     stats["time"] = backward_time
 
