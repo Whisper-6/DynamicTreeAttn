@@ -1,7 +1,24 @@
+"""Single-file benchmark runner for dense/tree forward/backward.
+
+Usage examples:
+1) Dense backward with original per-sequence path:
+   python run.py --model /path/to/model --data /path/to/call.pt --run dense_backward --mb-tokens -1
+
+2) Dense backward with FFD packed micro-batches ([1, T_total] + cu_seqlens):
+   python run.py --model /path/to/model --data /path/to/call.pt --run dense_backward --mb-tokens 32768
+
+3) Tree backward baseline:
+   python run.py --model /path/to/model --data /path/to/call.pt --run tree_backward
+"""
+
 import torch
 from token_trie import TokenTrie
 from tree_training_engine import TreeTrainingEngine
-from dense import forward as _dense_forward, backward as _dense_backward
+from dense import (
+    forward as _dense_forward,
+    backward as _dense_backward,
+    backward_packed as _dense_backward_packed,
+)
 import time
 
 def get_time():
@@ -61,10 +78,31 @@ def tree_forward(model, engine, input_ids, args):
     return stats
     
 
-def dense_backward(model, input_ids, attachs, loss_fn, act_ckpt: bool, use_tqdm):
+def dense_backward(
+    model,
+    input_ids,
+    attachs,
+    loss_fn,
+    act_ckpt: bool,
+    use_tqdm,
+    mb_tokens: int = -1,
+):
 
     backward_time = get_time()
-    loss = _dense_backward(model, input_ids, attachs, loss_fn, act_ckpt, use_tqdm=use_tqdm)
+    if mb_tokens == -1:
+        loss = _dense_backward(
+            model, input_ids, attachs, loss_fn, act_ckpt, use_tqdm=use_tqdm
+        )
+    else:
+        loss = _dense_backward_packed(
+            model,
+            input_ids,
+            attachs,
+            loss_fn,
+            act_ckpt,
+            use_tqdm=use_tqdm,
+            mb_tokens=mb_tokens,
+        )
     backward_time = get_time() - backward_time
 
     stats = {
@@ -117,7 +155,7 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
 
 import argparse
 import os
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 DTYPE_DICT = {
     "bf16": torch.bfloat16,
@@ -173,11 +211,14 @@ if __name__ == "__main__":
                         choices=["dense_forward", "tree_forward", "dense_backward", "tree_backward"])
     parser.add_argument("--grad-out", type=str, default=None)
 
-    parser.add_argument("--block-size", type=int, default=2048)
+    parser.add_argument("--block-size", type=int, default=4096)
     parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
+    parser.add_argument("--mb-tokens", type=int, default=-1, help="dense backward micro-batch token cap; -1 keeps original per-sequence path")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
+    parser.add_argument("--warmup", action="store_true", help="run one warmup iteration before timed run")
+    parser.add_argument("--warmup-nseq", type=int, default=16, help="sequence cap used by warmup")
 
     args = parser.parse_args()
     if args.attn_imp is None:
@@ -208,6 +249,33 @@ if __name__ == "__main__":
     else:
         model.train()
 
+    # -------- warmup --------
+    if args.warmup:
+        if args.run == "dense_forward":
+            warmup_inputs = input_ids[: min(args.warmup_nseq, len(input_ids))]
+            dense_forward(model, warmup_inputs, use_tqdm=False)
+        elif args.run == "dense_backward":
+            warmup_inputs = input_ids[: min(args.warmup_nseq, len(input_ids))]
+            warmup_attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1} for _ in warmup_inputs]
+            dense_backward(
+                model,
+                warmup_inputs,
+                warmup_attachs,
+                loss_fn,
+                args.act_ckpt,
+                use_tqdm=False,
+                mb_tokens=args.mb_tokens,
+            )
+            model.zero_grad(set_to_none=True)
+        elif args.run == "tree_forward":
+            warmup_inputs = input_ids[: min(args.warmup_nseq, len(input_ids))]
+            tree_forward(model, None, warmup_inputs, args)
+        elif args.run == "tree_backward":
+            warmup_inputs = input_ids[: min(args.warmup_nseq, len(input_ids))]
+            warmup_attachs = attachs[: len(warmup_inputs)]
+            tree_backward(model, None, warmup_inputs, warmup_attachs, loss_fn, args)
+            model.zero_grad(set_to_none=True)
+
     # -------- run --------
     torch.cuda.reset_peak_memory_stats()
 
@@ -215,7 +283,15 @@ if __name__ == "__main__":
         stats = dense_forward(model, input_ids, use_tqdm=True)
 
     elif args.run == "dense_backward":
-        stats = dense_backward(model, input_ids, attachs, loss_fn, args.act_ckpt, use_tqdm=True)
+        stats = dense_backward(
+            model,
+            input_ids,
+            attachs,
+            loss_fn,
+            args.act_ckpt,
+            use_tqdm=True,
+            mb_tokens=args.mb_tokens,
+        )
 
     elif args.run == "tree_forward":
         stats = tree_forward(model, None, input_ids, args)
@@ -244,16 +320,19 @@ if __name__ == "__main__":
 
 """
 python run.py \
-  --model /data/tree/models/Qwen3-0.6B \
-  --data data/tau2-16k-merged/call1.pt \
+  --model /data/jiarui/dta/models/Qwen2.5-0.5B \
+  --data /tmp/areal/aime_rollout_dump/call_2.pt \
   --run tree_backward \
-  --grad-out grad/Qwen3-0.6B-TB-bf16.pt
+  --warmup \
+  --grad-out /tmp/tree_tmp.pt
 
 python run.py \
-  --model /data/tree/models/Qwen3-0.6B \
-  --data data/tau2-16k-merged/call1.pt \
+  --model /data/jiarui/dta/models/Qwen2.5-0.5B \
+  --data /tmp/areal/aime_rollout_dump/call_2.pt \
   --run dense_backward \
-  --grad-out grad/Qwen3-0.6B-DB-bf16.pt
+  --grad-out /tmp/tmp_dense.pt \
+  --warmup \
+  --mb-tokens 4096
 
 python compare_grads.py \
     --baseline-grad grad/Qwen3-0.6B-DB-bf16.pt \

@@ -1,3 +1,17 @@
+"""Folder-level benchmark runner over multiple .pt files.
+
+Usage examples:
+1) Dense backward with original per-sequence path:
+   python run_all.py --model /path/to/model --data /path/to/data_folder --run dense_backward --mb-tokens -1
+
+2) Dense backward with FFD packed micro-batches ([1, T_total] + cu_seqlens):
+   python run_all.py --model /path/to/model --data /path/to/data_folder --run dense_backward --mb-tokens 32768
+
+3) Dense/Tree forward throughput sweep:
+   python run_all.py --model /path/to/model --data /path/to/data_folder --run dense_forward
+   python run_all.py --model /path/to/model --data /path/to/data_folder --run tree_forward
+"""
+
 import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -7,6 +21,7 @@ import json
 
 from run import dense_forward, tree_forward, dense_backward, tree_backward
 from tree_training_engine import TreeTrainingEngine
+from token_trie import TokenTrie
 
 ATTACH = {
     "w_logprobs": -1.0,
@@ -63,19 +78,35 @@ def run_tree_forward(model, datas, args, warmup: bool=True):
 
     return results
 
-def run_dense_backward(model, datas, loss_fn, act_ckpt, warmup: bool=True):
+def run_dense_backward(model, datas, loss_fn, act_ckpt, mb_tokens: int = -1, warmup: bool=True):
 
     if warmup:
         inputs = datas[0][1][:16]
         attachs = [ATTACH] * len(inputs)
-        dense_backward(model, inputs, attachs, loss_fn, act_ckpt, use_tqdm=False)
+        dense_backward(
+            model,
+            inputs,
+            attachs,
+            loss_fn,
+            act_ckpt,
+            use_tqdm=False,
+            mb_tokens=mb_tokens,
+        )
         model.zero_grad()
 
     results = []
 
     for name, input_ids in tqdm.tqdm(datas):
         attachs = [ATTACH] * len(input_ids)
-        stats = dense_backward(model, input_ids, attachs, loss_fn, act_ckpt, use_tqdm=False)
+        stats = dense_backward(
+            model,
+            input_ids,
+            attachs,
+            loss_fn,
+            act_ckpt,
+            use_tqdm=False,
+            mb_tokens=mb_tokens,
+        )
         stats["name"] = name
         results.append(stats)
 
@@ -109,8 +140,9 @@ if __name__ == "__main__":
                         choices=["dense_forward", "tree_forward", "dense_backward", "tree_backward"])
     parser.add_argument("--stats-out", type=str, default=None)
 
-    parser.add_argument("--block-size", type=int, default=2048)
+    parser.add_argument("--block-size", type=int, default=4096)
     parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
+    parser.add_argument("--mb-tokens", type=int, default=-1, help="dense backward micro-batch token cap; -1 keeps original per-sequence path")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
@@ -145,7 +177,13 @@ if __name__ == "__main__":
         results = run_dense_forward(model, datas)
 
     elif args.run == "dense_backward":
-        results = run_dense_backward(model, datas, loss_fn, args.act_ckpt)
+        results = run_dense_backward(
+            model,
+            datas,
+            loss_fn,
+            args.act_ckpt,
+            mb_tokens=args.mb_tokens,
+        )
 
     elif args.run == "tree_forward":
         results = run_tree_forward(model, datas, args)
