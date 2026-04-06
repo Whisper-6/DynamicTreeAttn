@@ -141,15 +141,34 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
         token_trie=trie,
         loss_fn=loss_fn,
         block_size=args.block_size,
-        cut_f1_tail=args.cut_f1_tail
+        cut_f1_tail=args.cut_f1_tail,
+        profile=args.profile_tree_backward,
+        profile_cuda_sync=not args.profile_no_cuda_sync,
     )
     backward_time = get_time() - backward_time
 
     stats = trie.get_stats(mode="backward", block_size=args.block_size)
     stats["loss"] = loss
     stats["time"] = backward_time
+    if args.profile_tree_backward:
+        stats["breakdown"] = engine.last_profile
 
     return stats
+
+
+def _summarize_tree_breakdown(breakdown: dict, fallback_total: float) -> dict:
+    total = breakdown.get("tree_backward_total_time", fallback_total)
+    forward_graph = breakdown.get("pop_forward_graph_time", 0.0)
+    autograd_backward = breakdown.get("pop_autograd_backward_time", 0.0)
+    kv_cache_fill = breakdown.get("build_cache_time", 0.0)
+    other = max(0.0, total - (forward_graph + autograd_backward + kv_cache_fill))
+    return {
+        "total": float(total),
+        "forward_graph": float(forward_graph),
+        "autograd_backward": float(autograd_backward),
+        "kv_cache_fill": float(kv_cache_fill),
+        "other": float(other),
+    }
 
 # ---------------- Test ----------------
 
@@ -219,6 +238,21 @@ if __name__ == "__main__":
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
     parser.add_argument("--warmup", action="store_true", help="run one warmup iteration before timed run")
     parser.add_argument("--warmup-nseq", type=int, default=16, help="sequence cap used by warmup")
+    parser.add_argument(
+        "--profile-tree-backward",
+        action="store_true",
+        help="collect detailed tree_backward time breakdown (adds measurement overhead)",
+    )
+    parser.add_argument(
+        "--profile-no-cuda-sync",
+        action="store_true",
+        help="disable cuda synchronize around profile timers (less accurate, lower overhead)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="apply torch.compile to the model (reduce-overhead mode with dynamic shapes)",
+    )
 
     args = parser.parse_args()
     if args.attn_imp is None:
@@ -248,6 +282,9 @@ if __name__ == "__main__":
         model.eval()
     else:
         model.train()
+
+    if args.compile:
+        model = torch.compile(model, dynamic=True)
 
     # -------- warmup --------
     if args.warmup:
@@ -302,6 +339,16 @@ if __name__ == "__main__":
     print(f"[{run_name}] Loss: {stats['loss']:.6f}")
     print(f"[{run_name}] Time: {stats['time']:.2f} s")
     print(f"[{run_name}] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
+    if args.run == "tree_backward" and args.profile_tree_backward:
+        br = stats.get("breakdown", {})
+        sm = _summarize_tree_breakdown(br, stats["time"])
+        total = sm["total"] if sm["total"] > 0 else 1e-12
+        print("[Tree Backward Breakdown]")
+        print(f"  forward_graph:     {sm['forward_graph']:.6f} s ({sm['forward_graph'] / total * 100:.1f}%)")
+        print(f"  autograd_backward: {sm['autograd_backward']:.6f} s ({sm['autograd_backward'] / total * 100:.1f}%)")
+        print(f"  kv_cache_fill:     {sm['kv_cache_fill']:.6f} s ({sm['kv_cache_fill'] / total * 100:.1f}%)")
+        print(f"  other:             {sm['other']:.6f} s ({sm['other'] / total * 100:.1f}%)")
+        print(f"  total(profile):    {sm['total']:.6f} s")
 
     # -------- save gradients --------
     if args.run.endswith("backward") and args.grad_out is not None:
@@ -321,14 +368,14 @@ if __name__ == "__main__":
 """
 python run.py \
   --model /data/jiarui/dta/models/Qwen2.5-0.5B \
-  --data /tmp/areal/aime_rollout_dump/call_2.pt \
+  --data /tmp/areal/amo_bench_rollout_dump/call_2.pt \
   --run tree_backward \
-  --warmup \
-  --grad-out /tmp/tree_tmp.pt
+  --profile-tree-backward \
+  --warmup
 
 python run.py \
   --model /data/jiarui/dta/models/Qwen2.5-0.5B \
-  --data /tmp/areal/aime_rollout_dump/call_2.pt \
+  --data /tmp/areal/amo_bench_rollout_dump/call_2.pt \
   --run dense_backward \
   --grad-out /tmp/tmp_dense.pt \
   --warmup \

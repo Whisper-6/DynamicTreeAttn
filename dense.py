@@ -1,6 +1,7 @@
 import torch
 from typing import List, Union
 import tqdm
+import warnings
 
 from vocab_parallel import gather_logprobs, gather_logprobs_entropy
 from areal.utils.datapack import ffd_allocate
@@ -81,8 +82,33 @@ def backward_packed(
         model.gradient_checkpointing_disable()
 
     lengths = [int(seq.numel()) for seq in token_seqs]
-    # Keep at least one sequence per micro-batch even if all fit into one bucket.
-    group_indices = ffd_allocate(lengths, capacity=mb_tokens, min_groups=1)
+    # `mb_tokens` is treated as a packing threshold:
+    # sequences with length >= mb_tokens are put into dedicated micro-batches.
+    oversize_indices = [i for i, length in enumerate(lengths) if length >= mb_tokens]
+    normal_indices = [i for i, length in enumerate(lengths) if length < mb_tokens]
+
+    if oversize_indices:
+        max_oversize_len = max(lengths[i] for i in oversize_indices)
+        warnings.warn(
+            (
+                f"Found {len(oversize_indices)} sequence(s) with length >= mb_tokens "
+                f"({mb_tokens}). They will be placed into dedicated micro-batches. "
+                f"max_seq_len={max_oversize_len}."
+            ),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    group_indices = []
+    if normal_indices:
+        normal_lengths = [lengths[i] for i in normal_indices]
+        # Keep at least one sequence per micro-batch even if all fit into one bucket.
+        normal_group_indices = ffd_allocate(normal_lengths, capacity=mb_tokens, min_groups=1)
+        # Map local indices back to original sample indices.
+        group_indices.extend([[normal_indices[i] for i in group] for group in normal_group_indices])
+
+    # Put every oversize sequence into a standalone micro-batch.
+    group_indices.extend([[i] for i in oversize_indices])
 
     iterator = tqdm.tqdm(group_indices) if use_tqdm else group_indices
     for group in iterator:
