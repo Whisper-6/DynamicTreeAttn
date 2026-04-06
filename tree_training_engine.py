@@ -239,7 +239,9 @@ class TreeTrainingEngine:
         
         if profile is not None:
             _prof_inc(profile, "build_cache_calls", 1)
-            _prof_inc(profile, "build_cache_tokens", end - start)
+            build_len = end - start
+            _prof_inc(profile, "build_cache_tokens", build_len)
+            profile.setdefault("build_cache_lengths", []).append(int(build_len))
             t_build = _time_now(profile_cuda_sync)
 
         # Build prefix cache from existing KV

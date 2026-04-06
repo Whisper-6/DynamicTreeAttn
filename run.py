@@ -161,12 +161,24 @@ def _summarize_tree_breakdown(breakdown: dict, fallback_total: float) -> dict:
     forward_graph = breakdown.get("pop_forward_graph_time", 0.0)
     autograd_backward = breakdown.get("pop_autograd_backward_time", 0.0)
     kv_cache_fill = breakdown.get("build_cache_time", 0.0)
+    build_cache_calls = int(breakdown.get("build_cache_calls", 0))
+    build_cache_tokens = int(breakdown.get("build_cache_tokens", 0))
+    build_cache_lengths = breakdown.get("build_cache_lengths", [])
+    build_cache_lens_count = len(build_cache_lengths)
+    avg_build_cache_len = (
+        float(build_cache_tokens) / build_cache_calls if build_cache_calls > 0 else 0.0
+    )
     other = max(0.0, total - (forward_graph + autograd_backward + kv_cache_fill))
     return {
         "total": float(total),
         "forward_graph": float(forward_graph),
         "autograd_backward": float(autograd_backward),
         "kv_cache_fill": float(kv_cache_fill),
+        "build_cache_calls": build_cache_calls,
+        "build_cache_tokens": build_cache_tokens,
+        "build_cache_lengths": build_cache_lengths,
+        "build_cache_lens_count": build_cache_lens_count,
+        "avg_build_cache_len": avg_build_cache_len,
         "other": float(other),
     }
 
@@ -347,6 +359,11 @@ if __name__ == "__main__":
         print(f"  forward_graph:     {sm['forward_graph']:.6f} s ({sm['forward_graph'] / total * 100:.1f}%)")
         print(f"  autograd_backward: {sm['autograd_backward']:.6f} s ({sm['autograd_backward'] / total * 100:.1f}%)")
         print(f"  kv_cache_fill:     {sm['kv_cache_fill']:.6f} s ({sm['kv_cache_fill'] / total * 100:.1f}%)")
+        print(f"  build_cache_calls: {sm['build_cache_calls']}")
+        print(f"  build_cache_tokens:{sm['build_cache_tokens']}")
+        print(f"  avg_cache_len:     {sm['avg_build_cache_len']:.2f}")
+        print(f"  build_cache_lens_count: {sm['build_cache_lens_count']}")
+        print(f"  build_cache_lens:  {sm['build_cache_lengths']}")
         print(f"  other:             {sm['other']:.6f} s ({sm['other'] / total * 100:.1f}%)")
         print(f"  total(profile):    {sm['total']:.6f} s")
 
