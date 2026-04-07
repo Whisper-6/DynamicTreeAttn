@@ -28,6 +28,36 @@ ATTACH = {
     "w_entropy": 0.1
 }
 
+
+def _is_oom_error(exc: Exception) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg and "cuda" in msg
+
+
+def _recover_from_failure(model) -> None:
+    model.zero_grad(set_to_none=True)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _make_error_stat(name: str, exc: Exception) -> dict:
+    return {
+        "name": name,
+        "status": "error",
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "oom": _is_oom_error(exc),
+        "n_tokens": 0,
+        "time": 0.0,
+    }
+
+
+def _handle_warmup_failure(run_name: str, exc: Exception) -> None:
+    print(f"[{run_name}] Warmup failed: {type(exc).__name__}: {exc}")
+
+
 def loss_fn(logprob: torch.Tensor, entropy: torch.Tensor, attachment: dict):
     w_logprobs = attachment["w_logprobs"]
     w_entropy = attachment["w_entropy"]
@@ -46,24 +76,35 @@ def load_data(data_folder: str):
     return datas
 
 
-def run_dense_forward(model, datas, warmup: bool=True):
+def run_dense_forward(model, datas, warmup: bool=True, on_stat=None):
     if not datas:
         return []
 
     if warmup:
         inputs = datas[0][1][:16]
-        dense_forward(model, inputs, use_tqdm=False)
+        try:
+            dense_forward(model, inputs, use_tqdm=False)
+        except Exception as exc:
+            _handle_warmup_failure("Dense Forward", exc)
+            _recover_from_failure(model)
 
     results = []
 
     for name, input_ids in tqdm.tqdm(datas):
-        stats = dense_forward(model, input_ids, use_tqdm=False)
-        stats["name"] = name
+        try:
+            stats = dense_forward(model, input_ids, use_tqdm=False)
+            stats["name"] = name
+            stats["status"] = "ok"
+        except Exception as exc:
+            stats = _make_error_stat(name, exc)
+            _recover_from_failure(model)
         results.append(stats)
+        if on_stat is not None:
+            on_stat(stats)
     
     return results
 
-def run_tree_forward(model, datas, args, warmup: bool=True):
+def run_tree_forward(model, datas, args, warmup: bool=True, on_stat=None):
     if not datas:
         return []
     
@@ -71,14 +112,25 @@ def run_tree_forward(model, datas, args, warmup: bool=True):
 
     if warmup:
         inputs = datas[0][1]
-        tree_forward(model, engine, inputs, args)
+        try:
+            tree_forward(model, engine, inputs, args)
+        except Exception as exc:
+            _handle_warmup_failure("Tree Forward", exc)
+            _recover_from_failure(model)
 
     results = []
 
     for name, input_ids in tqdm.tqdm(datas):
-        stats = tree_forward(model, engine, input_ids, args)
-        stats["name"] = name
+        try:
+            stats = tree_forward(model, engine, input_ids, args)
+            stats["name"] = name
+            stats["status"] = "ok"
+        except Exception as exc:
+            stats = _make_error_stat(name, exc)
+            _recover_from_failure(model)
         results.append(stats)
+        if on_stat is not None:
+            on_stat(stats)
 
     return results
 
@@ -90,6 +142,7 @@ def run_dense_backward(
     mb_tokens: int = -1,
     act_ckpt_long_seq: bool = False,
     warmup: bool = True,
+    on_stat=None,
 ):
     if not datas:
         return []
@@ -97,38 +150,49 @@ def run_dense_backward(
     if warmup:
         inputs = datas[0][1][:16]
         attachs = [ATTACH] * len(inputs)
-        dense_backward(
-            model,
-            inputs,
-            attachs,
-            loss_fn,
-            act_ckpt,
-            use_tqdm=False,
-            mb_tokens=mb_tokens,
-            act_ckpt_long_seq=act_ckpt_long_seq,
-        )
-        model.zero_grad()
+        try:
+            dense_backward(
+                model,
+                inputs,
+                attachs,
+                loss_fn,
+                act_ckpt,
+                use_tqdm=False,
+                mb_tokens=mb_tokens,
+                act_ckpt_long_seq=act_ckpt_long_seq,
+            )
+            model.zero_grad()
+        except Exception as exc:
+            _handle_warmup_failure("Dense Backward", exc)
+            _recover_from_failure(model)
 
     results = []
 
     for name, input_ids in tqdm.tqdm(datas):
         attachs = [ATTACH] * len(input_ids)
-        stats = dense_backward(
-            model,
-            input_ids,
-            attachs,
-            loss_fn,
-            act_ckpt,
-            use_tqdm=False,
-            mb_tokens=mb_tokens,
-            act_ckpt_long_seq=act_ckpt_long_seq,
-        )
-        stats["name"] = name
+        try:
+            stats = dense_backward(
+                model,
+                input_ids,
+                attachs,
+                loss_fn,
+                act_ckpt,
+                use_tqdm=False,
+                mb_tokens=mb_tokens,
+                act_ckpt_long_seq=act_ckpt_long_seq,
+            )
+            stats["name"] = name
+            stats["status"] = "ok"
+        except Exception as exc:
+            stats = _make_error_stat(name, exc)
+            _recover_from_failure(model)
         results.append(stats)
+        if on_stat is not None:
+            on_stat(stats)
 
     return results
 
-def run_tree_backward(model, datas, loss_fn, args, warmup: bool=True):
+def run_tree_backward(model, datas, loss_fn, args, warmup: bool=True, on_stat=None):
     if not datas:
         return []
 
@@ -137,16 +201,27 @@ def run_tree_backward(model, datas, loss_fn, args, warmup: bool=True):
     if warmup:
         inputs = datas[0][1]
         attachs = [ATTACH] * len(inputs)
-        tree_backward(model, engine, inputs, attachs, loss_fn, args)
-        model.zero_grad()
+        try:
+            tree_backward(model, engine, inputs, attachs, loss_fn, args)
+            model.zero_grad()
+        except Exception as exc:
+            _handle_warmup_failure("Tree Backward", exc)
+            _recover_from_failure(model)
 
     results = []
 
     for name, input_ids in tqdm.tqdm(datas):
         attachs = [ATTACH] * len(input_ids)
-        stats = tree_backward(model, engine, input_ids, attachs, loss_fn, args)
-        stats["name"] = name
+        try:
+            stats = tree_backward(model, engine, input_ids, attachs, loss_fn, args)
+            stats["name"] = name
+            stats["status"] = "ok"
+        except Exception as exc:
+            stats = _make_error_stat(name, exc)
+            _recover_from_failure(model)
         results.append(stats)
+        if on_stat is not None:
+            on_stat(stats)
 
     return results
 
@@ -232,10 +307,23 @@ if __name__ == "__main__":
         model.eval()
     else:
         model.train()
+
+    stats_out_file = None
+    stats_out_path = None
+    if args.stats_out is not None:
+        stats_out_path = args.stats_out
+        if use_torchrun:
+            stats_out_path = f"{args.stats_out}.rank{rank}"
+        stats_out_file = open(stats_out_path, "w")
+
+    def emit_stat(stat: dict) -> None:
+        if stats_out_file is not None:
+            stats_out_file.write(json.dumps(stat) + "\n")
+            stats_out_file.flush()
     
     # -------- run --------
     if args.run == "dense_forward":
-        results = run_dense_forward(model, datas)
+        results = run_dense_forward(model, datas, on_stat=emit_stat)
 
     elif args.run == "dense_backward":
         results = run_dense_backward(
@@ -245,13 +333,14 @@ if __name__ == "__main__":
             args.act_ckpt,
             mb_tokens=args.mb_tokens,
             act_ckpt_long_seq=args.act_ckpt_long_seq,
+            on_stat=emit_stat,
         )
 
     elif args.run == "tree_forward":
-        results = run_tree_forward(model, datas, args)
+        results = run_tree_forward(model, datas, args, on_stat=emit_stat)
 
     elif args.run == "tree_backward":
-        results = run_tree_backward(model, datas, loss_fn, args)
+        results = run_tree_backward(model, datas, loss_fn, args, on_stat=emit_stat)
 
     total_tokens = sum(stat["n_tokens"] for stat in results)
     total_time = sum(stat["time"] for stat in results)
@@ -277,12 +366,7 @@ if __name__ == "__main__":
         print(f"[{run_name}] Throughput: {local_throughput:.2f} tokens/s")
         print(f"[{run_name}] Peak memory: {local_peak_mem:.2f} GB")
 
-    if args.stats_out is not None:
-        stats_out_path = args.stats_out
-        if use_torchrun:
-            stats_out_path = f"{args.stats_out}.rank{rank}"
-        with open(stats_out_path, "w") as f:
-            for stat in results:
-                f.write(json.dumps(stat) + "\n")
+    if stats_out_file is not None:
+        stats_out_file.close()
     if dist_initialized:
         dist.destroy_process_group()
