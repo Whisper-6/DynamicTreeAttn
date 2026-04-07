@@ -86,13 +86,47 @@ def dense_backward(
     act_ckpt: bool,
     use_tqdm,
     mb_tokens: int = -1,
+    act_ckpt_long_seq: bool = False,
 ):
 
     backward_time = get_time()
-    if mb_tokens == -1:
+    if act_ckpt_long_seq:
+        if mb_tokens <= 0:
+            raise ValueError(
+                "act_ckpt_long_seq requires mb_tokens > 0 so short sequences can be packed."
+            )
+        lengths = [int(ids.numel()) for ids in input_ids]
+        long_indices = [i for i, length in enumerate(lengths) if length > mb_tokens]
+        short_indices = [i for i, length in enumerate(lengths) if length <= mb_tokens]
+
+        loss = 0.0
+        if short_indices:
+            loss += _dense_backward_packed(
+                model,
+                [input_ids[i] for i in short_indices],
+                [attachs[i] for i in short_indices],
+                loss_fn,
+                act_ckpt=False,
+                use_tqdm=use_tqdm,
+                mb_tokens=mb_tokens,
+            )
+        if long_indices:
+            loss += _dense_backward(
+                model,
+                [input_ids[i] for i in long_indices],
+                [attachs[i] for i in long_indices],
+                loss_fn,
+                act_ckpt=True,
+                use_tqdm=use_tqdm,
+            )
+        n_long_seq_ckpt = len(long_indices)
+        n_short_seq_packed = len(short_indices)
+    elif mb_tokens == -1:
         loss = _dense_backward(
             model, input_ids, attachs, loss_fn, act_ckpt, use_tqdm=use_tqdm
         )
+        n_long_seq_ckpt = 0
+        n_short_seq_packed = 0
     else:
         loss = _dense_backward_packed(
             model,
@@ -103,13 +137,17 @@ def dense_backward(
             use_tqdm=use_tqdm,
             mb_tokens=mb_tokens,
         )
+        n_long_seq_ckpt = 0
+        n_short_seq_packed = 0
     backward_time = get_time() - backward_time
 
     stats = {
         "loss": loss,
         "time": backward_time,
         "n_sequences": len(input_ids),
-        "n_tokens": sum(len(ids) for ids in input_ids)
+        "n_tokens": sum(len(ids) for ids in input_ids),
+        "n_long_seq_ckpt": n_long_seq_ckpt,
+        "n_short_seq_packed": n_short_seq_packed,
     }
 
     return stats
@@ -244,6 +282,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--block-size", type=int, default=4096)
     parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
+    parser.add_argument(
+        "--act-ckpt-long-seq",
+        action="store_true",
+        help=(
+            "dense backward only: when mb_tokens > 0, apply checkpointing only to "
+            "sequences with length > mb_tokens; sequences <= mb_tokens are packed and run "
+            "without checkpointing"
+        ),
+    )
     parser.add_argument("--mb-tokens", type=int, default=-1, help="dense backward micro-batch token cap; -1 keeps original per-sequence path")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
@@ -271,6 +318,12 @@ if __name__ == "__main__":
         args.attn_imp = ATTN_IMP_DICT[args.dtype]
     args.dtype = DTYPE_DICT[args.dtype]
     run_name = args.run.replace('_', ' ').title()
+    if args.act_ckpt and args.act_ckpt_long_seq:
+        parser.error("--act-ckpt and --act-ckpt-long-seq are mutually exclusive.")
+    if args.act_ckpt_long_seq and args.run != "dense_backward":
+        parser.error("--act-ckpt-long-seq is only valid with --run dense_backward.")
+    if args.act_ckpt_long_seq and args.mb_tokens <= 0:
+        parser.error("--act-ckpt-long-seq requires --mb-tokens > 0.")
 
     # -------- load data --------
     input_ids = load_data(args.data, args.model)
@@ -314,6 +367,7 @@ if __name__ == "__main__":
                 args.act_ckpt,
                 use_tqdm=False,
                 mb_tokens=args.mb_tokens,
+                act_ckpt_long_seq=args.act_ckpt_long_seq,
             )
             model.zero_grad(set_to_none=True)
         elif args.run == "tree_forward":
@@ -340,6 +394,7 @@ if __name__ == "__main__":
             args.act_ckpt,
             use_tqdm=True,
             mb_tokens=args.mb_tokens,
+            act_ckpt_long_seq=args.act_ckpt_long_seq,
         )
 
     elif args.run == "tree_forward":

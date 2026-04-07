@@ -14,7 +14,7 @@ Usage examples:
 
 import argparse
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 import os
 import tqdm
 import json
@@ -47,6 +47,8 @@ def load_data(data_folder: str):
 
 
 def run_dense_forward(model, datas, warmup: bool=True):
+    if not datas:
+        return []
 
     if warmup:
         inputs = datas[0][1][:16]
@@ -62,6 +64,8 @@ def run_dense_forward(model, datas, warmup: bool=True):
     return results
 
 def run_tree_forward(model, datas, args, warmup: bool=True):
+    if not datas:
+        return []
     
     engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=args.dtype, max_seq_len=16384, forward_only=True)
 
@@ -78,7 +82,17 @@ def run_tree_forward(model, datas, args, warmup: bool=True):
 
     return results
 
-def run_dense_backward(model, datas, loss_fn, act_ckpt, mb_tokens: int = -1, warmup: bool=True):
+def run_dense_backward(
+    model,
+    datas,
+    loss_fn,
+    act_ckpt,
+    mb_tokens: int = -1,
+    act_ckpt_long_seq: bool = False,
+    warmup: bool = True,
+):
+    if not datas:
+        return []
 
     if warmup:
         inputs = datas[0][1][:16]
@@ -91,6 +105,7 @@ def run_dense_backward(model, datas, loss_fn, act_ckpt, mb_tokens: int = -1, war
             act_ckpt,
             use_tqdm=False,
             mb_tokens=mb_tokens,
+            act_ckpt_long_seq=act_ckpt_long_seq,
         )
         model.zero_grad()
 
@@ -106,6 +121,7 @@ def run_dense_backward(model, datas, loss_fn, act_ckpt, mb_tokens: int = -1, war
             act_ckpt,
             use_tqdm=False,
             mb_tokens=mb_tokens,
+            act_ckpt_long_seq=act_ckpt_long_seq,
         )
         stats["name"] = name
         results.append(stats)
@@ -113,6 +129,8 @@ def run_dense_backward(model, datas, loss_fn, act_ckpt, mb_tokens: int = -1, war
     return results
 
 def run_tree_backward(model, datas, loss_fn, args, warmup: bool=True):
+    if not datas:
+        return []
 
     engine = TreeTrainingEngine(model_config=model.config, device=model.device, dtype=args.dtype, max_seq_len=16384)
 
@@ -142,17 +160,56 @@ if __name__ == "__main__":
 
     parser.add_argument("--block-size", type=int, default=4096)
     parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
+    parser.add_argument(
+        "--act-ckpt-long-seq",
+        action="store_true",
+        help=(
+            "dense backward only: when mb_tokens > 0, apply checkpointing only to "
+            "sequences with length > mb_tokens; sequences <= mb_tokens are packed and run "
+            "without checkpointing"
+        ),
+    )
     parser.add_argument("--mb-tokens", type=int, default=-1, help="dense backward micro-batch token cap; -1 keeps original per-sequence path")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
+    parser.add_argument(
+        "--torchrun",
+        action="store_true",
+        help="enable torchrun sharding using RANK/WORLD_SIZE/LOCAL_RANK",
+    )
     
     args = parser.parse_args()
     args.dtype = torch.bfloat16
     run_name = args.run.replace('_', ' ').title()
+    if args.act_ckpt and args.act_ckpt_long_seq:
+        parser.error("--act-ckpt and --act-ckpt-long-seq are mutually exclusive.")
+    if args.act_ckpt_long_seq and args.run != "dense_backward":
+        parser.error("--act-ckpt-long-seq is only valid with --run dense_backward.")
+    if args.act_ckpt_long_seq and args.mb_tokens <= 0:
+        parser.error("--act-ckpt-long-seq requires --mb-tokens > 0.")
+
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    use_torchrun = args.torchrun or env_world_size > 1
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = env_world_size if use_torchrun else 1
+    local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+    dist = None
+    dist_initialized = False
+    if use_torchrun:
+        if not torch.cuda.is_available():
+            raise RuntimeError("torchrun mode requires CUDA devices.")
+        torch.cuda.set_device(local_rank)
+        if world_size > 1:
+            import torch.distributed as dist  # type: ignore[no-redef]
+
+            dist.init_process_group(backend="nccl", init_method="env://")
+            dist_initialized = True
 
     # -------- load data --------
     datas = load_data(args.data)
+    if use_torchrun:
+        datas = datas[rank::world_size]
 
     if args.leafization:
         for _, input_ids in datas:
@@ -160,11 +217,15 @@ if __name__ == "__main__":
             input_ids = token_trie.inputs
 
     # -------- load model --------
+    if use_torchrun:
+        device_map = {"": torch.cuda.current_device()}
+    else:
+        device_map = "cuda"
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         dtype=args.dtype,
         attn_implementation="flash_attention_3",
-        device_map="cuda",
+        device_map=device_map,
     )
 
     if args.run.endswith("forward"):
@@ -183,6 +244,7 @@ if __name__ == "__main__":
             loss_fn,
             args.act_ckpt,
             mb_tokens=args.mb_tokens,
+            act_ckpt_long_seq=args.act_ckpt_long_seq,
         )
 
     elif args.run == "tree_forward":
@@ -193,11 +255,34 @@ if __name__ == "__main__":
 
     total_tokens = sum(stat["n_tokens"] for stat in results)
     total_time = sum(stat["time"] for stat in results)
-    throughput = total_tokens / total_time
-    print(f"[{run_name}] Throughput: {throughput:.2f} tokens/s")
-    print(f"[{run_name}] Peak memory: {torch.cuda.max_memory_allocated() / (1024**3):.2f} GB")
+    local_throughput = total_tokens / total_time if total_time > 0 else 0.0
+    local_peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
+
+    if dist_initialized:
+        total_tokens_tensor = torch.tensor(float(total_tokens), device=model.device)
+        total_time_tensor = torch.tensor(float(total_time), device=model.device)
+        peak_mem_tensor = torch.tensor(float(local_peak_mem), device=model.device)
+        dist.all_reduce(total_tokens_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_time_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(peak_mem_tensor, op=dist.ReduceOp.MAX)
+        if rank == 0:
+            throughput = (
+                total_tokens_tensor.item() / total_time_tensor.item()
+                if total_time_tensor.item() > 0
+                else 0.0
+            )
+            print(f"[{run_name}] Throughput: {throughput:.2f} tokens/s")
+            print(f"[{run_name}] Peak memory (max across ranks): {peak_mem_tensor.item():.2f} GB")
+    else:
+        print(f"[{run_name}] Throughput: {local_throughput:.2f} tokens/s")
+        print(f"[{run_name}] Peak memory: {local_peak_mem:.2f} GB")
 
     if args.stats_out is not None:
-        with open(args.stats_out, "w") as f:
+        stats_out_path = args.stats_out
+        if use_torchrun:
+            stats_out_path = f"{args.stats_out}.rank{rank}"
+        with open(stats_out_path, "w") as f:
             for stat in results:
                 f.write(json.dumps(stat) + "\n")
+    if dist_initialized:
+        dist.destroy_process_group()
