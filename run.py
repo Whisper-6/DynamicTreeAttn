@@ -191,7 +191,18 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
     stats["loss"] = loss
     stats["time"] = backward_time
     if profile_tree_backward:
-        stats["breakdown"] = engine.last_profile
+        sm = _summarize_tree_breakdown(engine.last_profile, backward_time)
+        total = sm["total"] if sm["total"] > 0 else 1e-12
+        stats["breakdown"] = {
+            "pop_forward_graph_time": float(sm["forward_graph"]),
+            "pop_autograd_backward_time": float(sm["autograd_backward"]),
+            "build_cache_time": float(sm["kv_cache_fill"]),
+            "other_time": float(sm["other"]),
+            "pop_forward_graph_pct": float(sm["forward_graph"] / total * 100.0),
+            "pop_autograd_backward_pct": float(sm["autograd_backward"] / total * 100.0),
+            "build_cache_pct": float(sm["kv_cache_fill"] / total * 100.0),
+            "other_pct": float(sm["other"] / total * 100.0),
+        }
 
     return stats
 
