@@ -289,7 +289,17 @@ if __name__ == "__main__":
         if world_size > 1:
             import torch.distributed as dist  # type: ignore[no-redef]
 
-            dist.init_process_group(backend="nccl", init_method="env://")
+            try:
+                # Newer PyTorch accepts device_id, which suppresses NCCL
+                # "device used by this process is currently unknown" warnings.
+                dist.init_process_group(
+                    backend="nccl",
+                    init_method="env://",
+                    device_id=torch.device("cuda", local_rank),
+                )
+            except TypeError:
+                # Backward compatibility for older PyTorch versions.
+                dist.init_process_group(backend="nccl", init_method="env://")
             dist_initialized = True
 
     # -------- load data --------
@@ -329,7 +339,10 @@ if __name__ == "__main__":
             with open(stats_out_path, "w"):
                 pass
         if dist_initialized:
-            dist.barrier()
+            try:
+                dist.barrier(device_ids=[local_rank])
+            except TypeError:
+                dist.barrier()
         stats_out_file = open(stats_out_path, "a")
 
     def emit_stat(stat: dict) -> None:
