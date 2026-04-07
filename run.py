@@ -153,6 +153,8 @@ def dense_backward(
     return stats
 
 def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
+    profile_tree_backward = getattr(args, "profile_tree_backward", False)
+    profile_no_cuda_sync = getattr(args, "profile_no_cuda_sync", False)
     
     if engine is None:
         max_seq_len = max(len(ids) for ids in input_ids)
@@ -180,15 +182,15 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
         loss_fn=loss_fn,
         block_size=args.block_size,
         cut_f1_tail=args.cut_f1_tail,
-        profile=args.profile_tree_backward,
-        profile_cuda_sync=not args.profile_no_cuda_sync,
+        profile=profile_tree_backward,
+        profile_cuda_sync=not profile_no_cuda_sync,
     )
     backward_time = get_time() - backward_time
 
     stats = trie.get_stats(mode="backward", block_size=args.block_size)
     stats["loss"] = loss
     stats["time"] = backward_time
-    if args.profile_tree_backward:
+    if profile_tree_backward:
         stats["breakdown"] = engine.last_profile
 
     return stats

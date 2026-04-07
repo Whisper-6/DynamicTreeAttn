@@ -13,6 +13,7 @@ Usage examples:
 """
 
 import argparse
+import fcntl
 import torch
 from transformers import AutoModelForCausalLM
 import os
@@ -249,6 +250,16 @@ if __name__ == "__main__":
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
     parser.add_argument(
+        "--profile-tree-backward",
+        action="store_true",
+        help="collect detailed tree_backward time breakdown (adds measurement overhead)",
+    )
+    parser.add_argument(
+        "--profile-no-cuda-sync",
+        action="store_true",
+        help="disable cuda synchronize around profile timers (less accurate, lower overhead)",
+    )
+    parser.add_argument(
         "--torchrun",
         action="store_true",
         help="enable torchrun sharding using RANK/WORLD_SIZE/LOCAL_RANK",
@@ -312,14 +323,23 @@ if __name__ == "__main__":
     stats_out_path = None
     if args.stats_out is not None:
         stats_out_path = args.stats_out
-        if use_torchrun:
-            stats_out_path = f"{args.stats_out}.rank{rank}"
-        stats_out_file = open(stats_out_path, "w")
+        # In distributed runs, all ranks append to the same file.
+        # Rank 0 truncates once, then everyone opens with append mode.
+        if dist_initialized and rank == 0:
+            with open(stats_out_path, "w"):
+                pass
+        if dist_initialized:
+            dist.barrier()
+        stats_out_file = open(stats_out_path, "a")
 
     def emit_stat(stat: dict) -> None:
         if stats_out_file is not None:
-            stats_out_file.write(json.dumps(stat) + "\n")
-            stats_out_file.flush()
+            fcntl.flock(stats_out_file.fileno(), fcntl.LOCK_EX)
+            try:
+                stats_out_file.write(json.dumps(stat) + "\n")
+                stats_out_file.flush()
+            finally:
+                fcntl.flock(stats_out_file.fileno(), fcntl.LOCK_UN)
     
     # -------- run --------
     if args.run == "dense_forward":
