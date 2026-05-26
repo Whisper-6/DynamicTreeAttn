@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import atexit
 from dataclasses import dataclass
 from math import gcd
 from math import ceil
@@ -39,8 +40,22 @@ LossFn = Callable[[torch.Tensor, torch.Tensor, dict], torch.Tensor]
 
 _PATCHED_TREE_ATTENTION = False
 _PATCHED_TREE_ATTENTION_OPTIONS: dict[str, int] | None = None
-_PATCHED_QWEN3_SPARSE_AC = False
 DEFAULT_FLEX_BLOCK_SIZE = 128
+_DEBUG_TREE_ATTN_CALLS: dict[int, int] = {}
+_DEBUG_TREE_ATTN_SUMMARY_REGISTERED = False
+
+
+def _debug_tree_attn_summary() -> None:
+    if not _DEBUG_TREE_ATTN_CALLS:
+        return
+    counts = sorted(_DEBUG_TREE_ATTN_CALLS.values())
+    recomputed = sum(count >= 2 for count in counts)
+    print(
+        "DTA_TREE_ATTN_SUMMARY "
+        f"modules={len(counts)} min_calls={min(counts)} max_calls={max(counts)} "
+        f"recomputed_modules={recomputed}",
+        flush=True,
+    )
 
 
 def _validate_flex_block_size(flex_block_size: int) -> int:
@@ -248,6 +263,15 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
                 "Unset AREAL_USE_TRITON_TREE_ATTN to use compiled flex attention."
             )
         assert tree_attn_meta.block_mask is not None
+        if os.environ.get("DTA_DEBUG_TREE_ATTN_CALLS") == "1":
+            global _DEBUG_TREE_ATTN_SUMMARY_REGISTERED
+            if not _DEBUG_TREE_ATTN_SUMMARY_REGISTERED:
+                atexit.register(_debug_tree_attn_summary)
+                _DEBUG_TREE_ATTN_SUMMARY_REGISTERED = True
+            module_id = id(self)
+            _DEBUG_TREE_ATTN_CALLS[module_id] = (
+                _DEBUG_TREE_ATTN_CALLS.get(module_id, 0) + 1
+            )
         return compiled_flex_attention(
             q,
             k,
@@ -262,41 +286,6 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
     TreeAttentionWrapper.forward = forward
     _PATCHED_TREE_ATTENTION = True
     _PATCHED_TREE_ATTENTION_OPTIONS = kernel_options
-
-
-def _patch_qwen3_sparse_ac_skip_attention() -> None:
-    """Keep Archon AC off tree attention so checkpoint recompute cannot hit flex fallback."""
-    global _PATCHED_QWEN3_SPARSE_AC
-    if _PATCHED_QWEN3_SPARSE_AC:
-        return
-
-    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-        checkpoint_wrapper,
-    )
-    from areal.experimental.models.archon.qwen3.infra import parallelize as qwen3_parallelize
-
-    def apply_ac_ffn_only(model: nn.Module, ac_config, **kwargs) -> None:
-        if ac_config.mode == "none":
-            return
-        if ac_config.mode not in ("full", "selective"):
-            raise ValueError(f"Unsupported sparse AC mode: {ac_config.mode}")
-        if not hasattr(model, "layers"):
-            raise ValueError("Model must have a 'layers' attribute to apply AC")
-
-        ckpt_kwargs = dict(
-            preserve_rng_state=ac_config.preserve_rng_state,
-            determinism_check=ac_config.determinism_check,
-            early_stop=ac_config.early_stop,
-            debug=ac_config.debug,
-        )
-        for _, block in model.layers.named_children():
-            if getattr(block, "feed_forward", None) is not None:
-                block.feed_forward = checkpoint_wrapper(block.feed_forward, **ckpt_kwargs)
-            if getattr(block, "moe", None) is not None:
-                block.moe = checkpoint_wrapper(block.moe, **ckpt_kwargs)
-
-    qwen3_parallelize.apply_ac = apply_ac_ffn_only
-    _PATCHED_QWEN3_SPARSE_AC = True
 
 
 @dataclass
@@ -359,13 +348,18 @@ def initialize_archon_engine(
 
     if sparse:
         _patch_tree_attention_for_compiled_flex(flex_block_size)
-        if act_ckpt:
-            _patch_qwen3_sparse_ac_skip_attention()
 
     mb_spec = MicroBatchSpec(
         n_mbs=1,
         max_tokens_per_mb=max_tokens_per_mb if sparse else None,
     )
+    archon_config = ArchonEngineConfig(attn_type="varlen")
+    if sparse and act_ckpt:
+        archon_config.ac_mode = os.environ.get("DTA_ARCHON_AC_MODE", "full")
+        archon_config.selective_ac_option = os.environ.get(
+            "DTA_ARCHON_SELECTIVE_AC_OPTION",
+            archon_config.selective_ac_option,
+        )
     config = TrainEngineConfig(
         backend="archon:d1",
         experiment_name="dynamic_tree_attn_bench",
@@ -377,7 +371,7 @@ def initialize_archon_engine(
         gradient_checkpointing=act_ckpt,
         optimizer=None,
         enable_tree_training=sparse,
-        archon=ArchonEngineConfig(attn_type="varlen"),
+        archon=archon_config,
     )
     engine = ArchonEngine(config)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))

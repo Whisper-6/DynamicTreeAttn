@@ -238,6 +238,7 @@ if __name__ == "__main__":
             sparse=args.run.startswith("archon_sparse"),
             max_tokens_per_mb=args.max_tokens_per_mb,
             flex_block_size=args.flex_block_size,
+            act_ckpt=args.act_ckpt,
         )
         if args.run.endswith("forward"):
             archon_engine.eval()
