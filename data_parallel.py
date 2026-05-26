@@ -1,9 +1,8 @@
-from typing import Set, List, Optional
+from types import SimpleNamespace
+from typing import List, Optional, Set
 
 from token_trie import TokenTrie
 from trie import CompressedTrie, _get_subtrie, _get_stats
-
-from typing import Optional
 
 def LB_by_n_tokens(token_seqs, K):
     bins = [[] for _ in range(K)]
@@ -34,6 +33,48 @@ def get_original_bins(token_trie: TokenTrie, leaf_bins: List[List[int]]) -> List
             for attach, _ in attach_lists:
                 original_seq_idx = attach['_sequence_batch_id']
                 bins[bucket_idx].append(original_seq_idx)
+    return bins
+
+def split_by_dfs_cost_limit(
+    token_seqs,
+    time_model,
+    *,
+    cost_limit: float,
+    mode: str,
+    block_size: Optional[int] = None,
+) -> List[List[int]]:
+    if cost_limit <= 0:
+        raise ValueError(f"cost_limit must be positive, got {cost_limit}.")
+
+    token_trie = TokenTrie(token_seqs)
+    n_leaf_seqs = len(token_trie.inputs)
+    if n_leaf_seqs == 0:
+        return []
+
+    compressed_trie = CompressedTrie(token_trie.lens, token_trie.lcp_lens)
+    args = SimpleNamespace(K=n_leaf_seqs, mode=mode, block_size=block_size)
+    divs = try_devide(
+        compressed_trie,
+        n_leaf_seqs,
+        args,
+        divL=[0] * (n_leaf_seqs + 1),
+        divR=[n_leaf_seqs] * (n_leaf_seqs + 1),
+        time_model=time_model,
+        cost_limit=cost_limit,
+    )
+
+    divs.append(n_leaf_seqs)
+    leaf_bins = [list(range(divs[i], divs[i + 1])) for i in range(len(divs) - 1)]
+    bins = get_original_bins(token_trie, leaf_bins)
+
+    for leaf_bin, bucket in zip(leaf_bins, bins):
+        cur_subtrie = _get_subtrie(compressed_trie, set(leaf_bin))
+        if pred_time(cur_subtrie, time_model, mode, block_size) > cost_limit:
+            raise ValueError(
+                "A single sequence exceeds cost_limit="
+                f"{cost_limit}: original_seq_indices={bucket}."
+            )
+
     return bins
 
 def LB_by_TM(token_seqs, time_model, args):

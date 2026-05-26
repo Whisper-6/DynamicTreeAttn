@@ -117,12 +117,18 @@ def tree_backward(model, engine, input_ids, attachs, loss_fn, args):
 
 import argparse
 import os
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 DTYPE_DICT = {
     "bf16": torch.bfloat16,
     "fp16": torch.float16,
     "fp32": torch.float32,
+}
+
+ARCHON_DTYPE_DICT = {
+    "bf16": "bfloat16",
+    "fp16": "float16",
+    "fp32": "float32",
 }
 
 ATTN_IMP_DICT = {
@@ -145,6 +151,11 @@ def load_data(data_path: str, model_path: str):
     else:
         raise ValueError(f"Unsupported data format: {data_path}")
     return input_ids
+
+def truncate_token_seqs(token_seqs, max_tokens_per_mb: int):
+    if max_tokens_per_mb <= 0:
+        return token_seqs
+    return [ids[:max_tokens_per_mb] for ids in token_seqs]
 
 def loss_fn(logprob: torch.Tensor, entropy: torch.Tensor, attachment: dict):
     w_logprobs = attachment["w_logprobs"]
@@ -170,16 +181,28 @@ if __name__ == "__main__":
     parser.add_argument("--attn-imp", type=str, default="flash_attention_3",
                         choices=["flash_attention_3", "flash_attention_2", "sdpa", "eager"])
     parser.add_argument("--run", type=str, required=True,
-                        choices=["dense_forward", "tree_forward", "dense_backward", "tree_backward"])
+                        choices=[
+                            "dense_forward",
+                            "tree_forward",
+                            "dense_backward",
+                            "tree_backward",
+                            "archon_dense_forward",
+                            "archon_dense_backward",
+                            "archon_sparse_forward",
+                            "archon_sparse_backward",
+                        ])
     parser.add_argument("--grad-out", type=str, default=None)
 
     parser.add_argument("--block-size", type=int, default=2048)
+    parser.add_argument("--flex-block-size", type=int, default=128)
+    parser.add_argument("--max-tokens-per-mb", type=int, default=16384)
     parser.add_argument("--act-ckpt", type=bool, default=False, help="enable activation checkpointing")
     parser.add_argument("--permute", type=str, default="ours", choices=["random", "idx", "ours"])
     parser.add_argument("--cut-f1-tail", type=bool, default=True, help="enable cutting f1 tail")
     parser.add_argument("--leafization", type=bool, default=False, help="enable leafization")
 
     args = parser.parse_args()
+    dtype_name = args.dtype
     if args.attn_imp is None:
         args.attn_imp = ATTN_IMP_DICT[args.dtype]
     args.dtype = DTYPE_DICT[args.dtype]
@@ -187,6 +210,7 @@ if __name__ == "__main__":
 
     # -------- load data --------
     input_ids = load_data(args.data, args.model)
+    input_ids = truncate_token_seqs(input_ids, args.max_tokens_per_mb)
 
     if args.leafization:
         token_trie = TokenTrie(input_ids)
@@ -196,20 +220,46 @@ if __name__ == "__main__":
         attachs = [{"w_logprobs": -1.0, "w_entropy": 0.1} for ids in input_ids]
 
     # -------- load model --------
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        dtype=args.dtype,
-        attn_implementation=args.attn_imp,
-        device_map="cuda",
-    )
+    archon_engine = None
+    model = None
+    if args.run.startswith("archon_"):
+        from archon_bench import (
+            archon_dense_backward,
+            archon_dense_forward,
+            archon_sparse_backward,
+            archon_sparse_forward,
+            initialize_archon_engine,
+            zero_grad,
+        )
 
-    if args.run.endswith("forward"):
-        model.eval()
+        archon_engine = initialize_archon_engine(
+            args.model,
+            dtype=ARCHON_DTYPE_DICT[dtype_name],
+            sparse=args.run.startswith("archon_sparse"),
+            max_tokens_per_mb=args.max_tokens_per_mb,
+            flex_block_size=args.flex_block_size,
+        )
+        if args.run.endswith("forward"):
+            archon_engine.eval()
+        else:
+            archon_engine.train()
+            zero_grad(archon_engine)
     else:
-        model.train()
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            dtype=args.dtype,
+            attn_implementation=args.attn_imp,
+            device_map="cuda",
+        )
+
+        if args.run.endswith("forward"):
+            model.eval()
+        else:
+            model.train()
 
     # -------- run --------
-    torch.cuda.reset_peak_memory_stats()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
     if args.run == "dense_forward":
         stats = dense_forward(model, input_ids, use_tqdm=True)
@@ -223,15 +273,55 @@ if __name__ == "__main__":
     elif args.run == "tree_backward":
         stats = tree_backward(model, None, input_ids, attachs, loss_fn, args)
 
+    elif args.run == "archon_dense_forward":
+        stats = archon_dense_forward(
+            archon_engine,
+            input_ids,
+            max_tokens_per_mb=args.max_tokens_per_mb,
+        )
+
+    elif args.run == "archon_dense_backward":
+        stats = archon_dense_backward(
+            archon_engine,
+            input_ids,
+            attachs,
+            loss_fn,
+            max_tokens_per_mb=args.max_tokens_per_mb,
+        )
+
+    elif args.run == "archon_sparse_forward":
+        stats = archon_sparse_forward(
+            archon_engine,
+            input_ids,
+            max_tokens_per_mb=args.max_tokens_per_mb,
+            flex_block_size=args.flex_block_size,
+        )
+
+    elif args.run == "archon_sparse_backward":
+        stats = archon_sparse_backward(
+            archon_engine,
+            input_ids,
+            attachs,
+            loss_fn,
+            max_tokens_per_mb=args.max_tokens_per_mb,
+            block_size=args.block_size,
+            flex_block_size=args.flex_block_size,
+        )
+
     print(f"[{run_name}] Loss: {stats['loss']:.6f}")
     print(f"[{run_name}] Time: {stats['time']:.2f} s")
-    print(f"[{run_name}] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
+    if "prepare_time" in stats:
+        print(f"[{run_name}] Prepare Time: {stats['prepare_time']:.2f} s")
+        print(f"[{run_name}] Compute Time: {stats['compute_time']:.2f} s")
+    if torch.cuda.is_available():
+        print(f"[{run_name}] Peak Memory : {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GB")
 
     # -------- save gradients --------
     if args.run.endswith("backward") and args.grad_out is not None:
+        grad_model = archon_engine.model if archon_engine is not None else model
         if args.grad_out == "bash":
             # 输出前 10 个 model 参数的梯度模长
-            for i, (name, param) in enumerate(model.named_parameters()):
+            for i, (name, param) in enumerate(grad_model.named_parameters()):
                 if param.grad is not None:
                     grad_norm = param.grad.norm().item()
                     print(f"Param: {name}, Grad Norm: {grad_norm:.6f}")
@@ -240,7 +330,10 @@ if __name__ == "__main__":
                 if i >= 9:
                     break
         else:
-            save_gradients(model, args.grad_out)
+            save_gradients(grad_model, args.grad_out)
+
+    if archon_engine is not None:
+        archon_engine.destroy()
 
 """
 python run.py \
@@ -259,4 +352,12 @@ python compare_grads.py \
     --baseline-grad grad/Qwen3-0.6B-DB-bf16.pt \
     --exp-grad grad/Qwen3-0.6B-TB-bf16.pt \
     --out grad/Qwen3-0.6B-TB-vs-DB-bf16.txt
+
+ python run.py \
+    --model /data/jiarui/dta/models/Qwen3-0.6B \
+    --data ./tau2_data/call1.pt \
+    --run archon_dense_forward \
+    --max-tokens-per-mb 6016 \
+    --block-size 1024 \
+    --attn-imp flash_attention_2
 """

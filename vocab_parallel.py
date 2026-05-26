@@ -5,7 +5,10 @@ from typing import TypeVar
 import torch
 from torch import distributed as dist
 
-from areal.platforms import is_npu_available
+try:
+    from areal.platforms import is_npu_available
+except ModuleNotFoundError:
+    from areal.infra.platforms import is_npu_available
 
 T = TypeVar("T", torch.Tensor, tuple[torch.Tensor, torch.Tensor])
 

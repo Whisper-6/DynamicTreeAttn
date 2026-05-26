@@ -12,7 +12,7 @@ def forward(model, token_seqs: List[torch.LongTensor], use_tqdm) -> List[torch.T
     for i in iterator:
         input_ids = token_seqs[i].unsqueeze(0).to(model.device)
 
-        outputs = model(input_ids=input_ids, labels=input_ids)
+        outputs = model(input_ids=input_ids)
         
         logprobs = gather_logprobs(
             logits=outputs.logits,
@@ -36,7 +36,7 @@ def backward(model, token_seqs: List[torch.LongTensor], attachs, loss_fn, act_ck
         input_ids = token_seqs[i].unsqueeze(0).to(model.device)
         attachment = attachs[i]
 
-        outputs = model(input_ids=input_ids, labels=input_ids, use_cache=False)
+        outputs = model(input_ids=input_ids, use_cache=False)
 
         logprobs, entropy = gather_logprobs_entropy(
             logits=outputs.logits,

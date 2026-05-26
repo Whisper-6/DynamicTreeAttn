@@ -32,7 +32,7 @@ def _get_stats(lens: List[int], lcp_lens: List[int], mode: str, block_size: Opti
             f1_start = lcp_lens[i-1] if i > 0 else 0
 
             if block_size is None or pop_len <= block_size:
-                f1_end = lcp_lens[i]
+                f1_end = start
                 sum_prefix_len += start
             else:
                 n_blocks = ceil(pop_len / block_size)
