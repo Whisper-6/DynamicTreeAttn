@@ -5,7 +5,6 @@ import sys
 import time
 import atexit
 from dataclasses import dataclass
-from math import gcd
 from math import ceil
 from pathlib import Path
 from typing import Callable
@@ -39,7 +38,6 @@ from tree_time_model import TreeTimeModel
 LossFn = Callable[[torch.Tensor, torch.Tensor, dict], torch.Tensor]
 
 _PATCHED_TREE_ATTENTION = False
-_PATCHED_TREE_ATTENTION_OPTIONS: dict[str, int] | None = None
 DEFAULT_FLEX_BLOCK_SIZE = 128
 _DEBUG_TREE_ATTN_CALLS: dict[int, int] = {}
 _DEBUG_TREE_ATTN_SUMMARY_REGISTERED = False
@@ -62,14 +60,6 @@ def _validate_flex_block_size(flex_block_size: int) -> int:
     if flex_block_size <= 0:
         raise ValueError(f"flex_block_size must be positive, got {flex_block_size}.")
     return flex_block_size
-
-
-def _flex_kernel_options(flex_block_size: int) -> dict[str, int]:
-    flex_block_size = _validate_flex_block_size(flex_block_size)
-    return {
-        "BLOCK_M": gcd(flex_block_size, 128),
-        "BLOCK_N": gcd(flex_block_size, 64),
-    }
 
 
 def _trie_parent_list(trie: TrieNode, padded_size: int) -> list[int]:
@@ -216,14 +206,9 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
     torch.compile(flex_attention). The block mask still uses AReaL's default
     sparse block size controlled by DynamicTreeAttn.
     """
-    global _PATCHED_TREE_ATTENTION, _PATCHED_TREE_ATTENTION_OPTIONS
-    kernel_options = _flex_kernel_options(flex_block_size)
+    global _PATCHED_TREE_ATTENTION
+    _validate_flex_block_size(flex_block_size)
     if _PATCHED_TREE_ATTENTION:
-        if _PATCHED_TREE_ATTENTION_OPTIONS != kernel_options:
-            raise RuntimeError(
-                "TreeAttentionWrapper is already patched with kernel options "
-                f"{_PATCHED_TREE_ATTENTION_OPTIONS}, cannot repatch with {kernel_options}."
-            )
         return
 
     compiled_flex_attention = torch.compile(
@@ -272,6 +257,9 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
             _DEBUG_TREE_ATTN_CALLS[module_id] = (
                 _DEBUG_TREE_ATTN_CALLS.get(module_id, 0) + 1
             )
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
         return compiled_flex_attention(
             q,
             k,
@@ -280,12 +268,10 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
             score_mod=None,
             scale=scale,
             enable_gqa=q.shape[1] != k.shape[1],
-            kernel_options=kernel_options,
         )
 
     TreeAttentionWrapper.forward = forward
     _PATCHED_TREE_ATTENTION = True
-    _PATCHED_TREE_ATTENTION_OPTIONS = kernel_options
 
 
 @dataclass
