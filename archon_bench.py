@@ -231,7 +231,7 @@ def _patch_tree_attention_for_compiled_flex(flex_block_size: int) -> None:
         dynamic=True,
         options={
             "epilogue_fusion": True,
-            "max_autotune": False,
+            "max_autotune": True,
             "shape_padding": True,
             "trace.enabled": False,
             "triton.cudagraphs": False,
